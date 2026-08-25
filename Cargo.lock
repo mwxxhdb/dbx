@@ -2183,6 +2183,7 @@ dependencies = [
  "futures",
  "log",
  "pbkdf2 0.12.2",
+ "percent-encoding",
  "redis",
  "reqwest 0.12.28",
  "rustls 0.23.43",
@@ -2194,6 +2195,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "utoipa",
  "uuid",
 ]

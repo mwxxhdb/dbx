@@ -1,5 +1,8 @@
 mod auth;
 mod error;
+// dbx-custom:start(env-connections) —— 见 CUSTOMIZATIONS.md
+mod env_connections;
+// dbx-custom:end
 mod routes;
 mod sse;
 mod ssh_prompt;
@@ -252,6 +255,14 @@ async fn main() {
         let db_path = data_dir.join("dbx.db");
         let storage = Storage::open(&db_path).await.expect("Failed to open storage");
         storage.migrate_from_json(&data_dir).await.expect("Failed to migrate JSON data");
+
+        // dbx-custom:start(env-connections) —— 见 CUSTOMIZATIONS.md
+        match env_connections::apply_env_connections(&storage).await {
+            Ok(0) => {}
+            Ok(count) => log::info!("Applied {count} datasource(s) from DBX_CONN_* environment variables"),
+            Err(error) => log::error!("Failed to apply env datasources: {error}"),
+        }
+        // dbx-custom:end
 
         // Initialize core dialect registry and load external plugin dialects
         register_core_dialects();
