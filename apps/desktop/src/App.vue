@@ -41,6 +41,9 @@ import { useScheduledDatabaseBackups } from "@/composables/useScheduledDatabaseB
 import { shouldDrawDesktopWindowFrame } from "@/composables/useWindowControls";
 import { createOpenTabsRestorationBarrier, initializeDesktopOpenTabs, initializeOpenTabs, type OpenTabsRestorationBarrier } from "@/lib/app/openTabsStartup";
 import { finishAppCloseWithRequiredPersist } from "@/lib/app/appClosePersistence";
+// dbx-custom:start(mongo-quick-open) —— 见 CUSTOMIZATIONS.md
+import { openMongoQuickOpenTarget } from "@/lib/app/mongoQuickOpenNavigation";
+// dbx-custom:end
 import { useSaveSqlFolderSelection } from "@/composables/useSaveSqlFolderSelection";
 import "@/i18n";
 import { translateBackendError } from "@/i18n/backend-errors";
@@ -2271,6 +2274,10 @@ async function handleQuickOpenSelect(item: any) {
     console.error("Failed to connect:", error);
     return;
   }
+
+  // dbx-custom:start(mongo-quick-open) —— 见 CUSTOMIZATIONS.md
+  if (await openMongoQuickOpenTarget(item, connectionStore, queryStore)) return;
+  // dbx-custom:end
 
   // Navigate based on type
   if (item.type === "connection") {

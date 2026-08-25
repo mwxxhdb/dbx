@@ -8,6 +8,9 @@ import * as api from "@/lib/backend/api";
 import type { SqlFileEntry } from "@/lib/backend/api";
 import { getSqlFileFolderPaths, sqlFileFoldersVersion } from "@/lib/sqlFile/sqlFileFolders";
 import i18n from "@/i18n";
+// dbx-custom:start(mongo-quick-open) —— 见 CUSTOMIZATIONS.md
+import { useMongoQuickOpenSource } from "@/composables/useMongoQuickOpenSource";
+// dbx-custom:end
 
 const REMOTE_SEARCH_DEBOUNCE_MS = 180;
 const REMOTE_SEARCH_MIN_QUERY_LENGTH = 2;
@@ -205,6 +208,9 @@ export function useQuickOpen() {
   const searchQuery = ref("");
   const selectedIndex = ref(0);
   const remoteItems = ref<QuickOpenItem[]>([]);
+  // dbx-custom:start(mongo-quick-open) —— 见 CUSTOMIZATIONS.md
+  const mongoSource = useMongoQuickOpenSource();
+  // dbx-custom:end
   const sqlFileItems = ref<QuickOpenItem[]>([]);
   let remoteSearchGeneration = 0;
   let remoteSearchTimer: ReturnType<typeof setTimeout> | undefined;
@@ -675,6 +681,9 @@ export function useQuickOpen() {
       cancelStaleRemoteRequestWaiters(generation);
       if (remoteSearchTimer) clearTimeout(remoteSearchTimer);
       remoteItems.value = [];
+      // dbx-custom:start(mongo-quick-open) —— 见 CUSTOMIZATIONS.md
+      mongoSource.reset();
+      // dbx-custom:end
 
       const normalizedQuery = query.trim();
 
@@ -684,6 +693,9 @@ export function useQuickOpen() {
       }
 
       if (normalizedQuery.length < REMOTE_SEARCH_MIN_QUERY_LENGTH) return;
+      // dbx-custom:start(mongo-quick-open) —— 见 CUSTOMIZATIONS.md
+      void mongoSource.search(normalizedQuery);
+      // dbx-custom:end
       const contexts = remoteSearchContexts();
       if (contexts.length === 0) return;
 
@@ -709,7 +721,8 @@ export function useQuickOpen() {
 
     const seen = new Set<string>();
     // When searching, include ALL SQL library files and external SQL files
-    for (const item of [...allItems.value, ...sqlLibraryAllItems.value, ...sqlFileItems.value, ...remoteItems.value]) {
+    // dbx-custom(mongo-quick-open): 末尾并入 mongoSource.items.value —— 见 CUSTOMIZATIONS.md
+    for (const item of [...allItems.value, ...sqlLibraryAllItems.value, ...sqlFileItems.value, ...remoteItems.value, ...mongoSource.items.value]) {
       const key = quickOpenItemKey(item);
       if (seen.has(key)) continue;
       seen.add(key);
