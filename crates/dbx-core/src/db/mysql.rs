@@ -4,7 +4,7 @@ use mysql_async::consts::{ColumnFlags, ColumnType};
 use mysql_async::prelude::*;
 use percent_encoding::percent_decode_str;
 use rust_decimal::Decimal;
-use sqlparser::ast::Statement;
+use sqlparser::ast::{AlterTableOperation, ObjectNamePart, Statement};
 use sqlparser::dialect::MySqlDialect;
 use sqlparser::parser::Parser;
 use std::borrow::Cow;
@@ -54,6 +54,15 @@ impl MySqlPool {
 
     pub async fn disconnect(self) -> Result<(), mysql_async::Error> {
         self.inner.disconnect().await
+    }
+
+    /// Returns whether both handles refer to the same underlying pool
+    /// generation. Pool options are not an identity: a reconnect creates a new
+    /// pool with identical options, and a late health probe for the old pool
+    /// must not be allowed to remove that replacement from routing.
+    #[cfg(test)]
+    pub(crate) fn is_same_pool(&self, other: &Self) -> bool {
+        std::sync::Arc::ptr_eq(&self.inner.metrics(), &other.inner.metrics())
     }
 }
 
@@ -273,7 +282,7 @@ fn nonblank(value: String) -> Option<String> {
 }
 
 async fn query_first_nonblank_string(conn: &mut mysql_async::Conn, sql: &str) -> Option<String> {
-    // MySQL reports nullable metadata such as TABLE_COLLATION as NULL for views.
+    // MySQL reports nullable metadata such as `@@version_comment` as NULL.
     // Reading it as String makes mysql_async panic during row conversion.
     match query_first_column::<String>(conn, sql).await {
         Ok(value) => value.and_then(nonblank),
@@ -3688,11 +3697,9 @@ pub async fn list_completion_objects(pool: &MySqlPool, database: &str) -> Result
 }
 
 fn columns_sql(database: &str, table: &str) -> String {
-    // Query only information_schema.COLUMNS and fetch TABLE_COLLATION separately via
-    // `table_collation_sql`. A LEFT JOIN onto information_schema.TABLES triggers a
-    // catastrophic plan on MySQL 5.7 (observed ~8s vs ~1ms without the join), because 5.7's
-    // TABLES metadata is materialized per-query with poor predicate pushdown. The separate
-    // lookup matches the `get_columns_show` fallback path and keeps results identical.
+    // Query only information_schema.COLUMNS. A LEFT JOIN onto information_schema.TABLES
+    // triggers a catastrophic plan on MySQL 5.7 (observed ~8s vs ~1ms without the join),
+    // because 5.7's TABLES metadata is materialized per-query with poor predicate pushdown.
     format!(
         "SELECT COLUMN_NAME, DATA_TYPE, COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT, EXTRA, \
          COLUMN_COMMENT, COLUMN_KEY, NUMERIC_PRECISION, NUMERIC_SCALE, CHARACTER_MAXIMUM_LENGTH, \
@@ -3789,28 +3796,6 @@ fn apply_mysql_generated_column_expressions(columns: &mut [ColumnInfo], expressi
         };
         if let Some(generated_extra) = mysql_generated_column_extra(extra, expression) {
             column.extra = Some(generated_extra);
-        }
-    }
-}
-
-fn table_collation_sql(database: &str, table: &str) -> String {
-    format!(
-        "SELECT TABLE_COLLATION FROM information_schema.TABLES WHERE TABLE_SCHEMA = {} AND TABLE_NAME = {} LIMIT 1",
-        quote_value(database),
-        quote_value(table),
-    )
-}
-
-fn normalize_mysql_column_charset_metadata(columns: &mut [ColumnInfo], table_collation: Option<&str>) {
-    let Some(table_collation) = table_collation.filter(|value| !value.trim().is_empty()) else {
-        return;
-    };
-    for column in columns {
-        if column.collation.as_deref().is_some_and(|value| value.eq_ignore_ascii_case(table_collation)) {
-            // MySQL reports effective values and does not preserve whether an
-            // equivalent table-default collation was explicitly written.
-            column.character_set = None;
-            column.collation = None;
         }
     }
 }
@@ -3955,14 +3940,6 @@ where
     };
     let rows: Vec<mysql_async::Row> = result.collect_and_drop().await.map_err(|e| e.to_string())?;
 
-    // When database is empty the COLUMNS query returns no rows, so the
-    // function falls through to get_columns_show and this code path is
-    // never reached.  Skip the collation lookup to avoid a pointless query.
-    let table_collation = if database.trim().is_empty() {
-        None
-    } else {
-        query_first_nonblank_string(&mut conn, &table_collation_sql(database, table)).await
-    };
     let mut columns: Vec<ColumnInfo> = rows
         .iter()
         .filter_map(|row| {
@@ -4010,7 +3987,6 @@ where
     }
 
     enrich_mysql_generated_column_expressions(&mut conn, database, table, &mut columns).await;
-    normalize_mysql_column_charset_metadata(&mut columns, table_collation.as_deref());
     Ok(columns)
 }
 
@@ -4027,11 +4003,6 @@ where
             let result = conn.query_iter(&sql).await.map_err(|e| e.to_string())?;
             result.collect_and_drop().await.map_err(|e| e.to_string())?
         }
-    };
-    let table_collation = if database.trim().is_empty() {
-        None
-    } else {
-        query_first_nonblank_string(&mut conn, &table_collation_sql(database, table)).await
     };
     let mut columns: Vec<ColumnInfo> = rows
         .iter()
@@ -4067,7 +4038,6 @@ where
         })
         .collect();
     enrich_mysql_generated_column_expressions(&mut conn, database, table, &mut columns).await;
-    normalize_mysql_column_charset_metadata(&mut columns, table_collation.as_deref());
     Ok(columns)
 }
 
@@ -5240,12 +5210,40 @@ pub async fn execute_query_on_conn_with_limits(
             }
         }
     } else {
-        let previous_explicit_timestamp_defaults = enable_explicit_timestamp_defaults_for_query(conn, sql).await;
-        let result = match conn.query_iter(sql).await {
-            Ok(result) => result,
-            Err(err) => {
-                restore_explicit_timestamp_defaults_for_query(conn, previous_explicit_timestamp_defaults).await;
-                return Err(err.to_string());
+        let mut query_sql = sql.to_string();
+        let mut previous_explicit_timestamp_defaults =
+            enable_explicit_timestamp_defaults_for_query(conn, &query_sql).await;
+        let result = loop {
+            match conn.query_iter(&query_sql).await {
+                Ok(result) => break result,
+                Err(err) => {
+                    restore_explicit_timestamp_defaults_for_query(conn, previous_explicit_timestamp_defaults).await;
+                    match mysql_add_column_if_not_exists_fallback(conn, &query_sql, &err).await {
+                        Some(MySqlAddColumnFallback::AlreadyExists) => {
+                            return Ok(MySqlQueryResult::exact(QueryResult {
+                                columns: vec![],
+                                column_types: Vec::new(),
+                                column_sortables: vec![],
+                                spatial_columns: vec![],
+                                spatial_values: vec![],
+                                rows: vec![],
+                                affected_rows: 0,
+                                execution_time_ms: start.elapsed().as_millis(),
+                                truncated: false,
+                                session_id: None,
+                                has_more: false,
+                                elasticsearch_raw_body: None,
+                                messages: vec![],
+                            }));
+                        }
+                        Some(MySqlAddColumnFallback::Retry(fallback_sql)) => {
+                            query_sql = fallback_sql;
+                            previous_explicit_timestamp_defaults =
+                                enable_explicit_timestamp_defaults_for_query(conn, &query_sql).await;
+                        }
+                        None => return Err(err.to_string()),
+                    }
+                }
             }
         };
         let affected_rows = result.affected_rows();
@@ -5463,11 +5461,149 @@ pub(crate) fn is_result_set_query(sql: &str, dialect: MySqlQueryDialect) -> bool
 
 pub(crate) fn is_batchable_non_result_query(sql: &str, dialect: MySqlQueryDialect) -> bool {
     !is_result_set_query(sql, dialect)
+        && !is_mysql_add_column_if_not_exists(sql)
         && starts_with_executable_sql_keyword_for_database(
             sql,
             &["INSERT", "REPLACE", "UPDATE", "DELETE"],
             DatabaseType::Mysql,
         )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MySqlAddColumnIfNotExists {
+    database: Option<String>,
+    table: String,
+    column: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum MySqlAddColumnFallback {
+    AlreadyExists,
+    Retry(String),
+}
+
+fn mysql_add_column_if_not_exists(sql: &str) -> Option<MySqlAddColumnIfNotExists> {
+    // sqlparser does not accept MySQL's `ADD COLUMN IF NOT EXISTS` ordering.
+    // Remove only the verified clause first, then use the AST to ensure the
+    // remaining statement is exactly one single-column ALTER TABLE operation.
+    let normalized_sql = mysql_add_column_fallback_sql(sql)?;
+    let statements = Parser::parse_sql(&MySqlDialect {}, &normalized_sql).ok()?;
+    let [Statement::AlterTable(alter_table)] = statements.as_slice() else {
+        return None;
+    };
+    let [AlterTableOperation::AddColumn { if_not_exists: false, column_def, .. }] = alter_table.operations.as_slice()
+    else {
+        return None;
+    };
+
+    let parts = alter_table.name.0.as_slice();
+    let (database, table) = match parts {
+        [ObjectNamePart::Identifier(table)] => (None, table.value.clone()),
+        [ObjectNamePart::Identifier(database), ObjectNamePart::Identifier(table)] => {
+            (Some(database.value.clone()), table.value.clone())
+        }
+        _ => return None,
+    };
+
+    Some(MySqlAddColumnIfNotExists { database, table, column: column_def.name.value.clone() })
+}
+
+pub(crate) fn is_mysql_add_column_if_not_exists(sql: &str) -> bool {
+    mysql_add_column_if_not_exists(sql).is_some()
+}
+
+fn find_if_not_exists_clause(sql: &str) -> Option<(usize, usize)> {
+    // Locate SQL keywords while skipping quoted strings and comments so a user
+    // comment cannot be mistaken for the actual ALTER TABLE clause.
+    let bytes = sql.as_bytes();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index].is_ascii_whitespace() {
+            index += 1;
+            continue;
+        }
+        if index + 1 < bytes.len() && bytes[index] == b'/' && bytes[index + 1] == b'*' {
+            index += 2;
+            while index + 1 < bytes.len() && !(bytes[index] == b'*' && bytes[index + 1] == b'/') {
+                index += 1;
+            }
+            index = (index + 2).min(bytes.len());
+            continue;
+        }
+        if bytes[index] == b'#' || (bytes[index] == b'-' && index + 1 < bytes.len() && bytes[index + 1] == b'-') {
+            index += if bytes[index] == b'#' { 1 } else { 2 };
+            while index < bytes.len() && bytes[index] != b'\n' {
+                index += 1;
+            }
+            continue;
+        }
+        if matches!(bytes[index], b'\'' | b'"' | b'`') {
+            let quote = bytes[index];
+            index += 1;
+            while index < bytes.len() {
+                if bytes[index] == quote {
+                    if index + 1 < bytes.len() && bytes[index + 1] == quote {
+                        index += 2;
+                    } else {
+                        index += 1;
+                        break;
+                    }
+                } else if bytes[index] == b'\\' && quote != b'`' {
+                    index = (index + 2).min(bytes.len());
+                } else {
+                    index += 1;
+                }
+            }
+            continue;
+        }
+        if bytes[index].is_ascii_alphabetic() || bytes[index] == b'_' {
+            let start = index;
+            index += 1;
+            while index < bytes.len() && (bytes[index].is_ascii_alphanumeric() || bytes[index] == b'_') {
+                index += 1;
+            }
+            tokens.push((sql[start..index].to_ascii_lowercase(), start, index));
+        } else {
+            index += 1;
+        }
+    }
+
+    tokens.windows(3).find_map(|window| {
+        (window[0].0 == "if" && window[1].0 == "not" && window[2].0 == "exists").then_some((window[0].1, window[2].2))
+    })
+}
+
+fn mysql_add_column_fallback_sql(sql: &str) -> Option<String> {
+    let (start, end) = find_if_not_exists_clause(sql)?;
+    let mut fallback_sql = String::with_capacity(sql.len());
+    fallback_sql.push_str(&sql[..start]);
+    fallback_sql.push_str(&sql[end..]);
+    Some(fallback_sql)
+}
+
+async fn mysql_add_column_if_not_exists_fallback(
+    conn: &mut mysql_async::Conn,
+    sql: &str,
+    error: &mysql_async::Error,
+) -> Option<MySqlAddColumnFallback> {
+    let mysql_error = matches!(error, mysql_async::Error::Server(server_error) if server_error.code == 1064);
+    if !mysql_error {
+        return None;
+    }
+    let column = mysql_add_column_if_not_exists(sql)?;
+    let database = column.database.as_deref().map(quote_value).unwrap_or_else(|| "DATABASE()".to_string());
+    let exists_sql = format!(
+        "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = {database} AND TABLE_NAME = {} AND COLUMN_NAME = {} LIMIT 1",
+        quote_value(&column.table),
+        quote_value(&column.column),
+    );
+    let exists = conn.query_first::<u8, _>(exists_sql).await.ok()?.is_some();
+    if exists {
+        Some(MySqlAddColumnFallback::AlreadyExists)
+    } else {
+        Some(MySqlAddColumnFallback::Retry(mysql_add_column_fallback_sql(sql)?))
+    }
 }
 
 /// MariaDB 10.5+ returns a result set for INSERT/DELETE/REPLACE ... RETURNING.
@@ -5589,7 +5725,20 @@ fn mysql_list_indexes_sql(database: &str, table: &str, include_expression: bool)
 }
 
 fn mysql_statistics_expression_is_unsupported(error: &mysql_async::Error) -> bool {
-    matches!(error, mysql_async::Error::Server(server_error) if server_error.code == 1054)
+    match error {
+        mysql_async::Error::Server(server_error) if server_error.code == 1054 => true,
+        mysql_async::Error::Server(server_error)
+            if matches!(server_error.code, 3009 | 4518) && server_error.state.eq_ignore_ascii_case("HY000") =>
+        {
+            // PolarDB-X/DRDS wraps the unknown EXPRESSION column in optimizer
+            // errors (4518/PXC and 3009/TDDL). Require the complete diagnostic
+            // so unrelated HY000 errors (for example permissions or connectivity
+            // failures) are not retried with a different metadata query.
+            let message = server_error.message.to_ascii_lowercase();
+            message.contains("column") && message.contains("expression") && message.contains("not found")
+        }
+        _ => false,
+    }
 }
 
 pub async fn list_indexes(pool: &MySqlPool, database: &str, table: &str) -> Result<Vec<IndexInfo>, String> {
@@ -6233,6 +6382,42 @@ mod tests {
         assert!(!is_batchable_non_result_query("SELECT * FROM users", dialect));
         assert!(!is_batchable_non_result_query("ANALYZE TABLE users", dialect));
         assert!(!is_batchable_non_result_query("CREATE TABLE users(id INT)", dialect));
+    }
+
+    #[test]
+    fn mysql_add_column_if_not_exists_fallback_only_matches_one_add_column() {
+        assert_eq!(
+            mysql_add_column_if_not_exists(
+                "ALTER TABLE `test_table` ADD COLUMN IF NOT EXISTS `start_date` DATE DEFAULT NULL AFTER `name`"
+            ),
+            Some(MySqlAddColumnIfNotExists {
+                database: None,
+                table: "test_table".to_string(),
+                column: "start_date".to_string(),
+            })
+        );
+        assert!(mysql_add_column_if_not_exists("ALTER TABLE test_table ADD COLUMN start_date DATE").is_none());
+        assert!(mysql_add_column_if_not_exists(
+            "ALTER TABLE test_table ADD COLUMN IF NOT EXISTS a INT, ADD COLUMN b INT"
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn mysql_add_column_if_not_exists_fallback_preserves_quoted_text_and_comments() {
+        let sql = "/* IF NOT EXISTS in a comment */ ALTER TABLE app.test_table ADD COLUMN IF NOT EXISTS start_date DATE DEFAULT 'IF NOT EXISTS'";
+        assert_eq!(
+            mysql_add_column_fallback_sql(sql),
+            Some("/* IF NOT EXISTS in a comment */ ALTER TABLE app.test_table ADD COLUMN  start_date DATE DEFAULT 'IF NOT EXISTS'".to_string())
+        );
+    }
+
+    #[test]
+    fn mysql_add_column_if_not_exists_is_not_batched() {
+        assert!(!is_batchable_non_result_query(
+            "ALTER TABLE test_table ADD COLUMN IF NOT EXISTS start_date DATE",
+            MySqlQueryDialect::default()
+        ));
     }
 
     #[test]
@@ -6882,12 +7067,12 @@ mod tests {
     }
 
     #[test]
-    fn mysql_columns_sql_uses_column_key_and_table_default_collation() {
+    fn mysql_columns_sql_uses_column_key_for_primary_keys_without_join() {
         let sql = columns_sql("app", "users");
 
         assert!(sql.contains("information_schema.COLUMNS"));
-        // TABLE_COLLATION is fetched separately via `table_collation_sql`; the LEFT JOIN onto
-        // information_schema.TABLES is intentionally avoided to keep MySQL 5.7 fast.
+        // The LEFT JOIN onto information_schema.TABLES is intentionally avoided to keep
+        // MySQL 5.7 fast.
         assert!(!sql.contains("information_schema.TABLES"));
         assert!(!sql.contains("TABLE_COLLATION"));
         assert!(!sql.contains("KEY_COLUMN_USAGE"));
@@ -6951,52 +7136,11 @@ mod tests {
     }
 
     #[test]
-    fn mysql_nullable_table_collation_uses_optional_string_conversion() {
+    fn mysql_nullable_metadata_uses_optional_string_conversion() {
         let collation = mysql_async::from_value_opt::<Option<String>>(mysql_async::Value::NULL)
             .expect("Option<String> must accept NULL MySQL metadata values");
 
         assert_eq!(collation, None);
-    }
-
-    #[test]
-    fn mysql_column_charset_metadata_clears_values_matching_table_default() {
-        let mut columns = vec![
-            ColumnInfo {
-                name: "inherited_name".to_string(),
-                character_set: Some("utf8mb4".to_string()),
-                collation: Some("utf8mb4_unicode_ci".to_string()),
-                ..Default::default()
-            },
-            ColumnInfo {
-                name: "explicit_other".to_string(),
-                character_set: Some("latin1".to_string()),
-                collation: Some("latin1_bin".to_string()),
-                ..Default::default()
-            },
-            ColumnInfo { name: "numeric_value".to_string(), ..Default::default() },
-        ];
-
-        normalize_mysql_column_charset_metadata(&mut columns, Some("utf8mb4_unicode_ci"));
-
-        assert_eq!((columns[0].character_set.as_deref(), columns[0].collation.as_deref()), (None, None));
-        assert_eq!(columns[1].character_set.as_deref(), Some("latin1"));
-        assert_eq!(columns[1].collation.as_deref(), Some("latin1_bin"));
-        assert_eq!((columns[2].character_set.as_deref(), columns[2].collation.as_deref()), (None, None));
-    }
-
-    #[test]
-    fn mysql_column_charset_metadata_preserves_values_without_table_default() {
-        let mut columns = vec![ColumnInfo {
-            name: "name".to_string(),
-            character_set: Some("utf8mb4".to_string()),
-            collation: Some("utf8mb4_unicode_ci".to_string()),
-            ..Default::default()
-        }];
-
-        normalize_mysql_column_charset_metadata(&mut columns, None);
-
-        assert_eq!(columns[0].character_set.as_deref(), Some("utf8mb4"));
-        assert_eq!(columns[0].collation.as_deref(), Some("utf8mb4_unicode_ci"));
     }
 
     #[test]
@@ -7518,6 +7662,52 @@ mod tests {
 
         assert!(mysql_statistics_expression_is_unsupported(&unsupported));
         assert!(!mysql_statistics_expression_is_unsupported(&permission_denied));
+    }
+
+    #[test]
+    fn mysql_index_metadata_accepts_drds_expression_error_only_with_matching_message() {
+        let unsupported = mysql_async::Error::Server(mysql_async::ServerError {
+            code: 3009,
+            message: "[TDDL-4518][ERR_VALIDATE] Column 'EXPRESSION' not found".to_string(),
+            state: "HY000".to_string(),
+        });
+        let unrelated = mysql_async::Error::Server(mysql_async::ServerError {
+            code: 3009,
+            message: "[TDDL-4518][ERR_VALIDATE] Column 'INDEX_NAME' not found".to_string(),
+            state: "HY000".to_string(),
+        });
+        let wrong_state = mysql_async::Error::Server(mysql_async::ServerError {
+            code: 3009,
+            message: "[TDDL-4518][ERR_VALIDATE] Column 'EXPRESSION' not found".to_string(),
+            state: "42S22".to_string(),
+        });
+
+        assert!(mysql_statistics_expression_is_unsupported(&unsupported));
+        assert!(!mysql_statistics_expression_is_unsupported(&unrelated));
+        assert!(!mysql_statistics_expression_is_unsupported(&wrong_state));
+    }
+
+    #[test]
+    fn mysql_index_metadata_accepts_polardbx_expression_error_only_with_matching_message() {
+        let unsupported = mysql_async::Error::Server(mysql_async::ServerError {
+            code: 4518,
+            message: "[PXC-4518][ERR_VALIDATE] : Column 'EXPRESSION' not found in any table".to_string(),
+            state: "HY000".to_string(),
+        });
+        let unrelated = mysql_async::Error::Server(mysql_async::ServerError {
+            code: 4518,
+            message: "[PXC-4518][ERR_VALIDATE] : Column 'INDEX_NAME' not found in any table".to_string(),
+            state: "HY000".to_string(),
+        });
+        let wrong_state = mysql_async::Error::Server(mysql_async::ServerError {
+            code: 4518,
+            message: "[PXC-4518][ERR_VALIDATE] : Column 'EXPRESSION' not found in any table".to_string(),
+            state: "42S22".to_string(),
+        });
+
+        assert!(mysql_statistics_expression_is_unsupported(&unsupported));
+        assert!(!mysql_statistics_expression_is_unsupported(&unrelated));
+        assert!(!mysql_statistics_expression_is_unsupported(&wrong_state));
     }
 
     #[test]

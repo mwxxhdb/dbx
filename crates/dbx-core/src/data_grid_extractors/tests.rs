@@ -66,6 +66,18 @@ fn extracts_raw_values_without_escaping_quotes() {
 }
 
 #[test]
+fn raw_exports_null_as_an_empty_value() {
+    let mut request = request(DataGridExtractorId::Raw);
+    request.columns = vec![column("name", 0)];
+    request.selected_column_indexes = vec![0];
+    request.rows = vec![vec![Value::Null]];
+
+    let result = extract_data_grid_selection(request).expect("raw extraction");
+
+    assert_eq!(result.text, "");
+}
+
+#[test]
 fn raw_rejects_multiple_selected_cells() {
     let error =
         extract_data_grid_selection(request(DataGridExtractorId::Raw)).expect_err("raw must reject multiple cells");
@@ -234,6 +246,34 @@ fn sql_in_list_deduplicates_only_identical_rendered_literals() {
     let result = extract_data_grid_selection(request).expect("SQL IN extraction");
 
     assert_eq!(result.text, "(1, '1', NULL, 'O''Reilly')");
+}
+
+#[test]
+fn sql_in_list_honors_kingbase_bit_literals() {
+    let mut request = request(DataGridExtractorId::SqlInList);
+    request.database_type = Some(DatabaseType::Kingbase);
+    request.identifier_quote = Some("`".to_string());
+    request.columns = vec![column("flag", 0)];
+    request.selected_column_indexes = vec![0];
+    request.table_meta = Some(DataGridTableMeta {
+        catalog: None,
+        database: None,
+        schema: None,
+        table_name: "flags".to_string(),
+        primary_keys: vec![],
+        columns: Some(vec![DataGridColumnInfo {
+            name: "flag".to_string(),
+            data_type: "pg_catalog.bit(1)".to_string(),
+            is_nullable: true,
+            is_primary_key: false,
+            column_default: None,
+            extra: None,
+        }]),
+    });
+    request.rows = vec![vec![json!("0")], vec![json!("1")]];
+
+    let result = extract_data_grid_selection(request).expect("Kingbase SQL IN extraction");
+    assert_eq!(result.text, "(b'0', b'1')");
 }
 
 #[test]

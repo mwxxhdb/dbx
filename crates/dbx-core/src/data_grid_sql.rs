@@ -153,6 +153,8 @@ pub enum DataGridContextFilterMode {
     IsNotBlank,
     Like,
     NotLike,
+    BeginsWith,
+    EndsWith,
     LessThan,
     LessThanOrEqual,
     GreaterThan,
@@ -232,6 +234,8 @@ pub struct DataGridColumnValuesFilterConditionOptions {
 pub struct DataGridColumnDistinctValuesSqlOptions {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database_type: Option<DatabaseType>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub driver_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identifier_quote: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -407,6 +411,7 @@ pub fn build_data_grid_copy_update_statements(options: DataGridCopyUpdateStateme
                         row.get(*index).unwrap_or(&Value::Null),
                         options.database_type,
                         *info,
+                        options.identifier_quote.as_deref(),
                     )
                 )
             })
@@ -507,6 +512,7 @@ pub fn build_data_grid_copy_insert_statement(options: DataGridCopyInsertStatemen
                             row.get(*index).unwrap_or(&Value::Null),
                             options.database_type,
                             info.as_ref(),
+                            options.identifier_quote.as_deref(),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -578,13 +584,30 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
                 None
             )
         )),
+        DataGridContextFilterMode::BeginsWith => Some(format!(
+            "{like_column} LIKE {}",
+            format_grid_sql_literal(
+                &Value::String(format!("{}%", value_to_filter_text(value))),
+                options.database_type,
+                None
+            )
+        )),
+        DataGridContextFilterMode::EndsWith => Some(format!(
+            "{like_column} LIKE {}",
+            format_grid_sql_literal(
+                &Value::String(format!("%{}", value_to_filter_text(value))),
+                options.database_type,
+                None
+            )
+        )),
         DataGridContextFilterMode::LessThan => Some(format!(
             "{column} < {}",
             format_data_grid_context_filter_literal(
                 value,
                 options.database_type,
                 &options.column_name,
-                options.column_info.as_ref()
+                options.column_info.as_ref(),
+                options.identifier_quote.as_deref(),
             )
         )),
         DataGridContextFilterMode::LessThanOrEqual => Some(format!(
@@ -593,7 +616,8 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
                 value,
                 options.database_type,
                 &options.column_name,
-                options.column_info.as_ref()
+                options.column_info.as_ref(),
+                options.identifier_quote.as_deref(),
             )
         )),
         DataGridContextFilterMode::GreaterThan => Some(format!(
@@ -602,7 +626,8 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
                 value,
                 options.database_type,
                 &options.column_name,
-                options.column_info.as_ref()
+                options.column_info.as_ref(),
+                options.identifier_quote.as_deref(),
             )
         )),
         DataGridContextFilterMode::GreaterThanOrEqual => Some(format!(
@@ -611,7 +636,8 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
                 value,
                 options.database_type,
                 &options.column_name,
-                options.column_info.as_ref()
+                options.column_info.as_ref(),
+                options.identifier_quote.as_deref(),
             )
         )),
         DataGridContextFilterMode::In => build_data_grid_context_membership_filter_condition(
@@ -620,6 +646,7 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
             options.database_type,
             &options.column_name,
             options.column_info.as_ref(),
+            options.identifier_quote.as_deref(),
             false,
         ),
         DataGridContextFilterMode::NotIn => build_data_grid_context_membership_filter_condition(
@@ -628,6 +655,7 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
             options.database_type,
             &options.column_name,
             options.column_info.as_ref(),
+            options.identifier_quote.as_deref(),
             true,
         ),
         DataGridContextFilterMode::Between => build_data_grid_context_range_filter_condition(
@@ -637,6 +665,7 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
             options.database_type,
             &options.column_name,
             options.column_info.as_ref(),
+            options.identifier_quote.as_deref(),
             false,
         ),
         DataGridContextFilterMode::NotBetween => build_data_grid_context_range_filter_condition(
@@ -646,6 +675,7 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
             options.database_type,
             &options.column_name,
             options.column_info.as_ref(),
+            options.identifier_quote.as_deref(),
             true,
         ),
         DataGridContextFilterMode::Equals => Some(format!(
@@ -654,7 +684,8 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
                 value,
                 options.database_type,
                 &options.column_name,
-                options.column_info.as_ref()
+                options.column_info.as_ref(),
+                options.identifier_quote.as_deref(),
             )
         )),
         DataGridContextFilterMode::NotEquals => Some(format!(
@@ -663,7 +694,8 @@ pub fn build_data_grid_context_filter_condition(options: DataGridContextFilterCo
                 value,
                 options.database_type,
                 &options.column_name,
-                options.column_info.as_ref()
+                options.column_info.as_ref(),
+                options.identifier_quote.as_deref(),
             )
         )),
     }
@@ -674,13 +706,14 @@ fn format_data_grid_context_filter_literal(
     database_type: Option<DatabaseType>,
     column_name: &str,
     column_info: Option<&DataGridColumnInfo>,
+    identifier_quote: Option<&str>,
 ) -> String {
     if database_type == Some(DatabaseType::Iotdb) && column_info.is_none() && column_name.eq_ignore_ascii_case("time") {
         if let Some(value) = value.as_str().filter(|value| is_decimal_i64(value)) {
             return value.to_string();
         }
     }
-    format_grid_sql_literal(value, database_type, column_info)
+    format_grid_sql_literal_with_identifier_quote(value, database_type, column_info, identifier_quote)
 }
 
 fn is_decimal_i64(value: &str) -> bool {
@@ -694,6 +727,7 @@ fn build_data_grid_context_membership_filter_condition(
     database_type: Option<DatabaseType>,
     column_name: &str,
     column_info: Option<&DataGridColumnInfo>,
+    identifier_quote: Option<&str>,
     negated: bool,
 ) -> Option<String> {
     if values.is_empty() {
@@ -708,7 +742,8 @@ fn build_data_grid_context_membership_filter_condition(
             has_null = true;
             continue;
         }
-        let literal = format_data_grid_context_filter_literal(value, database_type, column_name, column_info);
+        let literal =
+            format_data_grid_context_filter_literal(value, database_type, column_name, column_info, identifier_quote);
         if seen_literals.insert(literal.clone()) {
             literals.push(literal);
         }
@@ -766,14 +801,17 @@ fn build_data_grid_context_range_filter_condition(
     database_type: Option<DatabaseType>,
     column_name: &str,
     column_info: Option<&DataGridColumnInfo>,
+    identifier_quote: Option<&str>,
     negated: bool,
 ) -> Option<String> {
     let end_value = end_value?;
     if start_value.is_null() || end_value.is_null() {
         return None;
     }
-    let start = format_data_grid_context_filter_literal(start_value, database_type, column_name, column_info);
-    let end = format_data_grid_context_filter_literal(end_value, database_type, column_name, column_info);
+    let start =
+        format_data_grid_context_filter_literal(start_value, database_type, column_name, column_info, identifier_quote);
+    let end =
+        format_data_grid_context_filter_literal(end_value, database_type, column_name, column_info, identifier_quote);
     if database_type == Some(DatabaseType::Neo4j) {
         return if negated {
             Some(format!("({column} < {start} OR {column} > {end})"))
@@ -874,6 +912,9 @@ pub fn build_data_grid_column_distinct_values_sql(options: DataGridColumnDistinc
     let from_clause = format!(" FROM {table}{where_clause}{group_by}{order_by}");
 
     match table_pagination_strategy(options.database_type) {
+        TablePaginationStrategy::SqlServerTop if is_sqlserver_legacy_profile(options.driver_profile.as_deref()) => {
+            format!("SELECT {select_list}{from_clause}")
+        }
         TablePaginationStrategy::SqlServerTop => format!("SELECT TOP ({limit}) {select_list}{from_clause}"),
         TablePaginationStrategy::IrisTop => format!("SELECT TOP {limit} {select_list}{from_clause}"),
         TablePaginationStrategy::InformixFirst => format!("SELECT FIRST {limit} {select_list}{from_clause}"),
@@ -895,6 +936,10 @@ pub fn build_data_grid_column_distinct_values_sql(options: DataGridColumnDistinc
             format!("SELECT {select_list}{from_clause} LIMIT {limit}")
         }
     }
+}
+
+fn is_sqlserver_legacy_profile(driver_profile: Option<&str>) -> bool {
+    driver_profile.is_some_and(|profile| profile.trim().eq_ignore_ascii_case("sqlserver-legacy"))
 }
 
 pub fn build_data_grid_count_sql(options: DataGridCountSqlOptions) -> String {
@@ -960,7 +1005,12 @@ pub fn build_data_grid_conditional_update_sql(options: DataGridConditionalUpdate
     let sets = format!(
         "{} = {}",
         data_grid_identifier(options.database_type, &column_info.name, options.identifier_quote.as_deref()),
-        format_grid_save_sql_literal(&options.value, options.database_type, Some(column_info))
+        format_grid_save_sql_literal(
+            &options.value,
+            options.database_type,
+            Some(column_info),
+            options.identifier_quote.as_deref(),
+        )
     );
     Some(data_grid_statement(
         options.database_type,
@@ -1301,7 +1351,12 @@ fn build_data_grid_save_statements(
                 Some(format!(
                     "{} = {}",
                     data_grid_identifier(options.database_type, column, options.identifier_quote.as_deref()),
-                    format_grid_save_sql_literal(value, options.database_type, column_info_for(column_info, column))
+                    format_grid_save_sql_literal(
+                        value,
+                        options.database_type,
+                        column_info_for(column_info, column),
+                        options.identifier_quote.as_deref(),
+                    )
                 ))
             })
             .collect::<Vec<_>>()
@@ -1406,7 +1461,12 @@ fn build_data_grid_save_statements(
         let values = insert_pairs
             .iter()
             .map(|(column, value)| {
-                format_grid_save_sql_literal(value, options.database_type, column_info_for(column_info, column))
+                format_grid_save_sql_literal(
+                    value,
+                    options.database_type,
+                    column_info_for(column_info, column),
+                    options.identifier_quote.as_deref(),
+                )
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -1506,7 +1566,12 @@ fn build_data_grid_rollback_statements(
         let values = insert_pairs
             .iter()
             .map(|(column, value)| {
-                format_grid_assignment_sql_literal(value, options.database_type, column_info_for(column_info, column))
+                format_grid_assignment_sql_literal(
+                    value,
+                    options.database_type,
+                    column_info_for(column_info, column),
+                    options.identifier_quote.as_deref(),
+                )
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -1567,7 +1632,8 @@ fn build_data_grid_rollback_statements(
                     format_grid_assignment_sql_literal(
                         row.get(*column_index).unwrap_or(&Value::Null),
                         options.database_type,
-                        column_info_for(column_info, column)
+                        column_info_for(column_info, column),
+                        options.identifier_quote.as_deref(),
                     )
                 )
             })
@@ -1855,9 +1921,14 @@ fn build_hive_values_insert(
         .map(|(column, value)| {
             let info = column_info_for(metadata_columns, column);
             if save_literals {
-                format_grid_save_sql_literal(value, options.database_type, info)
+                format_grid_save_sql_literal(value, options.database_type, info, options.identifier_quote.as_deref())
             } else {
-                format_grid_assignment_sql_literal(value, options.database_type, info)
+                format_grid_assignment_sql_literal(
+                    value,
+                    options.database_type,
+                    info,
+                    options.identifier_quote.as_deref(),
+                )
             }
         })
         .collect::<Vec<_>>()
@@ -1915,6 +1986,7 @@ fn format_grid_copy_insert_sql_literal(
     value: &Value,
     database_type: Option<DatabaseType>,
     column_info: Option<&DataGridColumnInfo>,
+    identifier_quote: Option<&str>,
 ) -> String {
     if is_oracle_temporal_literal_database(database_type) {
         if let Some(text) = value.as_str() {
@@ -1925,13 +1997,14 @@ fn format_grid_copy_insert_sql_literal(
             }
         }
     }
-    format_grid_assignment_sql_literal(value, database_type, column_info)
+    format_grid_assignment_sql_literal(value, database_type, column_info, identifier_quote)
 }
 
 fn format_grid_assignment_sql_literal(
     value: &Value,
     database_type: Option<DatabaseType>,
     column_info: Option<&DataGridColumnInfo>,
+    identifier_quote: Option<&str>,
 ) -> String {
     if matches!(database_type, Some(DatabaseType::Oracle | DatabaseType::OceanbaseOracle)) {
         if let Some(constructor) = column_info.and_then(|column| oracle_character_lob_constructor(&column.data_type)) {
@@ -1941,9 +2014,14 @@ fn format_grid_assignment_sql_literal(
         }
     }
     if (value.is_array() || value.is_object()) && is_json_document_column(column_info) {
-        return format_grid_sql_literal(&Value::String(value.to_string()), database_type, column_info);
+        return format_grid_sql_literal_with_identifier_quote(
+            &Value::String(value.to_string()),
+            database_type,
+            column_info,
+            identifier_quote,
+        );
     }
-    format_grid_sql_literal(value, database_type, column_info)
+    format_grid_sql_literal_with_identifier_quote(value, database_type, column_info, identifier_quote)
 }
 
 fn format_oracle_lob_assignment_literal(text: &str, constructor: &str) -> String {
@@ -2007,14 +2085,26 @@ pub fn format_grid_sql_literal(
     database_type: Option<DatabaseType>,
     column_info: Option<&DataGridColumnInfo>,
 ) -> String {
+    format_grid_sql_literal_with_identifier_quote(value, database_type, column_info, None)
+}
+
+pub(crate) fn format_grid_sql_literal_with_identifier_quote(
+    value: &Value,
+    database_type: Option<DatabaseType>,
+    column_info: Option<&DataGridColumnInfo>,
+    identifier_quote: Option<&str>,
+) -> String {
     if value.is_null() {
         return "NULL".to_string();
     }
-    // Boolean values on BIT columns always use numeric 0/1.
+    // Boolean values on BIT columns use database-native boolean/bit literals.
     // This covers MySQL, SQL Server, and any other database where BIT
     // is a numeric/boolean type rather than a bit-string type like
     // PostgreSQL's bit(n).
     if let Some(value) = value.as_bool() {
+        if is_kingbase_bit_literal_column(database_type, column_info) {
+            return format!("b'{}'", if value { '1' } else { '0' });
+        }
         // SQL Server has no TRUE/FALSE literals (its boolean type is BIT, which
         // is_bit_literal_column already covers); any other column there still
         // needs numeric 1/0 instead of a literal.
@@ -2023,7 +2113,19 @@ pub fn format_grid_sql_literal(
         }
         return if value { "TRUE" } else { "FALSE" }.to_string();
     }
-    if is_mysql_bit_literal_column(database_type, column_info) {
+    if is_kingbase_bit_literal_column(database_type, column_info) {
+        if let Some(number) = value.as_number() {
+            if let Some(literal) = format_kingbase_bit_literal_text(&number.to_string()) {
+                return literal;
+            }
+        }
+        if let Some(text) = value.as_str() {
+            if let Some(literal) = format_kingbase_bit_literal_text(text) {
+                return literal;
+            }
+        }
+    }
+    if is_mysql_bit_literal_column(database_type, column_info, identifier_quote) {
         if let Some(number) = value.as_number() {
             return number.to_string();
         }
@@ -2079,7 +2181,12 @@ pub fn format_grid_sql_literal(
     }
     if database_type == Some(DatabaseType::ManticoreSearch) {
         if let Some(typed_value) = manticore_typed_attribute_value(&text, column_info) {
-            return format_grid_sql_literal(&typed_value, database_type, column_info);
+            return format_grid_sql_literal_with_identifier_quote(
+                &typed_value,
+                database_type,
+                column_info,
+                identifier_quote,
+            );
         }
     }
     if text.is_empty() {
@@ -2218,11 +2325,12 @@ fn format_grid_save_sql_literal(
     value: &Value,
     database_type: Option<DatabaseType>,
     column_info: Option<&DataGridColumnInfo>,
+    identifier_quote: Option<&str>,
 ) -> String {
     if empty_string_saves_as_null(value, column_info) {
         "NULL".to_string()
     } else {
-        format_grid_assignment_sql_literal(value, database_type, column_info)
+        format_grid_assignment_sql_literal(value, database_type, column_info, identifier_quote)
     }
 }
 
@@ -2350,8 +2458,21 @@ fn regex_like_local_datetime(text: &str) -> Option<Rfc3339Parts> {
     Some(Rfc3339Parts { date: date.to_string(), time: time.to_string(), fraction, zone: String::new() })
 }
 
-fn is_mysql_bit_literal_column(database_type: Option<DatabaseType>, column_info: Option<&DataGridColumnInfo>) -> bool {
-    is_mysql_datetime_literal_database(database_type)
+fn is_mysql_bit_literal_column(
+    database_type: Option<DatabaseType>,
+    column_info: Option<&DataGridColumnInfo>,
+    identifier_quote: Option<&str>,
+) -> bool {
+    (is_mysql_datetime_literal_database(database_type)
+        || (database_type == Some(DatabaseType::Kingbase) && identifier_quote == Some("`")))
+        && column_info.map(|column| is_bit_column_type(&column.data_type)).unwrap_or(false)
+}
+
+fn is_kingbase_bit_literal_column(
+    database_type: Option<DatabaseType>,
+    column_info: Option<&DataGridColumnInfo>,
+) -> bool {
+    database_type == Some(DatabaseType::Kingbase)
         && column_info.map(|column| is_bit_column_type(&column.data_type)).unwrap_or(false)
 }
 
@@ -2488,6 +2609,27 @@ fn format_mysql_bit_literal_text(text: &str) -> Option<String> {
         } else {
             trimmed.to_string()
         });
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("b'") && trimmed.ends_with('\'') {
+        let bits = &trimmed[2..trimmed.len() - 1];
+        if !bits.is_empty() && bits.chars().all(|ch| matches!(ch, '0' | '1')) {
+            return Some(format!("b'{bits}'"));
+        }
+    }
+    None
+}
+
+fn format_kingbase_bit_literal_text(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    if trimmed.eq_ignore_ascii_case("true") {
+        return Some("b'1'".to_string());
+    }
+    if trimmed.eq_ignore_ascii_case("false") {
+        return Some("b'0'".to_string());
+    }
+    if !trimmed.is_empty() && trimmed.chars().all(|ch| matches!(ch, '0' | '1')) {
+        return Some(format!("b'{trimmed}'"));
     }
     let lower = trimmed.to_ascii_lowercase();
     if lower.starts_with("b'") && trimmed.ends_with('\'') {
@@ -2756,9 +2898,12 @@ pub(crate) fn build_column_predicate(
     if value.is_null() {
         format!("{ident} IS NULL")
     } else if use_binary_text_comparison && uses_mysql_binary_text_predicate(database_type, value, column_info) {
-        format!("BINARY {ident} = {}", format_grid_assignment_sql_literal(value, database_type, column_info))
+        format!(
+            "BINARY {ident} = {}",
+            format_grid_assignment_sql_literal(value, database_type, column_info, identifier_quote)
+        )
     } else {
-        let literal = format_grid_assignment_sql_literal(value, database_type, column_info);
+        let literal = format_grid_assignment_sql_literal(value, database_type, column_info, identifier_quote);
         if use_binary_text_comparison {
             if let Some(predicate) = postgres_keyless_json_predicate(database_type, &ident, &literal, column_info) {
                 return predicate;
@@ -2780,9 +2925,12 @@ fn build_save_column_predicate(
     if value.is_null() || empty_string_saves_as_null(value, column_info) {
         format!("{ident} IS NULL")
     } else if use_binary_text_comparison && uses_mysql_binary_text_predicate(database_type, value, column_info) {
-        format!("BINARY {ident} = {}", format_grid_save_sql_literal(value, database_type, column_info))
+        format!(
+            "BINARY {ident} = {}",
+            format_grid_save_sql_literal(value, database_type, column_info, identifier_quote)
+        )
     } else {
-        let literal = format_grid_save_sql_literal(value, database_type, column_info);
+        let literal = format_grid_save_sql_literal(value, database_type, column_info, identifier_quote);
         if use_binary_text_comparison {
             if let Some(predicate) = postgres_keyless_json_predicate(database_type, &ident, &literal, column_info) {
                 return predicate;
@@ -3096,22 +3244,9 @@ pub(crate) fn qualified_table_name(
     crate::sql_dialect::qualified_table_name(database_type, schema, table_name)
 }
 
-fn iris_data_grid_identifier(name: &str, identifier_quote: Option<&str>) -> String {
-    let mut chars = name.chars();
-    let ordinary = chars.next().is_some_and(|first| first == '_' || first == '%' || first.is_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_alphanumeric());
-    if ordinary {
-        // Caché metadata names are case-insensitive. Quoting every ordinary
-        // name breaks Caché 2016 when delimited identifiers are disabled.
-        return name.to_string();
-    }
-    let quote = identifier_quote.map(str::trim).filter(|quote| !quote.is_empty()).unwrap_or("\"");
-    format!("{quote}{}{quote}", name.replace(quote, &format!("{quote}{quote}")))
-}
-
 fn data_grid_identifier(database_type: Option<DatabaseType>, name: &str, identifier_quote: Option<&str>) -> String {
     if database_type == Some(DatabaseType::Iris) {
-        return iris_data_grid_identifier(name, identifier_quote);
+        return crate::sql_dialect::quote_iris_identifier(name, identifier_quote);
     }
     crate::sql_dialect::quote_table_data_identifier(database_type, name, identifier_quote)
 }
@@ -3125,11 +3260,11 @@ pub(crate) fn data_grid_qualified_table_name(
     identifier_quote: Option<&str>,
 ) -> String {
     if database_type == Some(DatabaseType::Iris) {
-        let table = iris_data_grid_identifier(table_name, identifier_quote);
+        let table = crate::sql_dialect::quote_iris_identifier(table_name, identifier_quote);
         return schema
             .map(str::trim)
             .filter(|schema| !schema.is_empty())
-            .map(|schema| format!("{}.{table}", iris_data_grid_identifier(schema, identifier_quote)))
+            .map(|schema| format!("{}.{table}", crate::sql_dialect::quote_iris_identifier(schema, identifier_quote)))
             .unwrap_or(table);
     }
     if crate::sql_dialect::uses_connection_identifier_quote(database_type, identifier_quote) {
@@ -4154,6 +4289,48 @@ mod tests {
             Some("\"created_at\"::text NOT LIKE '%2026%'")
         );
         assert_eq!(
+            build_data_grid_context_filter_condition(DataGridContextFilterConditionOptions {
+                database_type: Some(DatabaseType::Mysql),
+                identifier_quote: None,
+                column_name: "file_name".to_string(),
+                mode: DataGridContextFilterMode::BeginsWith,
+                value: json!("FN"),
+                values: Vec::new(),
+                end_value: None,
+                column_info: Some(column("file_name", "varchar", false, None)),
+            })
+            .as_deref(),
+            Some("`file_name` LIKE 'FN%'")
+        );
+        assert_eq!(
+            build_data_grid_context_filter_condition(DataGridContextFilterConditionOptions {
+                database_type: Some(DatabaseType::Mysql),
+                identifier_quote: None,
+                column_name: "file_name".to_string(),
+                mode: DataGridContextFilterMode::EndsWith,
+                value: json!(".sql"),
+                values: Vec::new(),
+                end_value: None,
+                column_info: Some(column("file_name", "varchar", false, None)),
+            })
+            .as_deref(),
+            Some("`file_name` LIKE '%.sql'")
+        );
+        assert_eq!(
+            build_data_grid_context_filter_condition(DataGridContextFilterConditionOptions {
+                database_type: Some(DatabaseType::Postgres),
+                identifier_quote: None,
+                column_name: "update_date".to_string(),
+                mode: DataGridContextFilterMode::BeginsWith,
+                value: json!("128"),
+                values: Vec::new(),
+                end_value: None,
+                column_info: Some(column("update_date", "bigint", false, None)),
+            })
+            .as_deref(),
+            Some("\"update_date\"::text LIKE '128%'")
+        );
+        assert_eq!(
             build_data_grid_column_value_filter_condition(DataGridColumnValueFilterConditionOptions {
                 database_type: Some(DatabaseType::SqlServer),
                 identifier_quote: None,
@@ -4670,6 +4847,7 @@ mod tests {
         assert_eq!(
             build_data_grid_column_distinct_values_sql(DataGridColumnDistinctValuesSqlOptions {
                 database_type: Some(DatabaseType::Postgres),
+                driver_profile: None,
                 identifier_quote: None,
                 catalog: None,
                 database: None,
@@ -4687,6 +4865,7 @@ mod tests {
         assert_eq!(
             build_data_grid_column_distinct_values_sql(DataGridColumnDistinctValuesSqlOptions {
                 database_type: Some(DatabaseType::SqlServer),
+                driver_profile: None,
                 identifier_quote: None,
                 catalog: None,
                 database: None,
@@ -4704,6 +4883,7 @@ mod tests {
         assert_eq!(
             build_data_grid_column_distinct_values_sql(DataGridColumnDistinctValuesSqlOptions {
                 database_type: Some(DatabaseType::SqlServer),
+                driver_profile: None,
                 identifier_quote: None,
                 catalog: None,
                 database: None,
@@ -4720,7 +4900,26 @@ mod tests {
         );
         assert_eq!(
             build_data_grid_column_distinct_values_sql(DataGridColumnDistinctValuesSqlOptions {
+                database_type: Some(DatabaseType::SqlServer),
+                driver_profile: Some(" SQLSERVER-LEGACY ".to_string()),
+                identifier_quote: None,
+                catalog: None,
+                database: None,
+                schema: None,
+                table_name: "users".to_string(),
+                column_name: "status".to_string(),
+                column_info: Some(column("status", "nvarchar", true, None)),
+                where_input: None,
+                search_value: None,
+                limit: Some(25),
+                include_counts: true,
+            }),
+            "SELECT [status] AS dbx_value, COUNT(*) AS dbx_count FROM [users] GROUP BY [status] ORDER BY dbx_count DESC, dbx_value"
+        );
+        assert_eq!(
+            build_data_grid_column_distinct_values_sql(DataGridColumnDistinctValuesSqlOptions {
                 database_type: Some(DatabaseType::Oracle),
+                driver_profile: None,
                 identifier_quote: None,
                 catalog: None,
                 database: None,
@@ -4738,6 +4937,7 @@ mod tests {
         assert_eq!(
             build_data_grid_column_distinct_values_sql(DataGridColumnDistinctValuesSqlOptions {
                 database_type: Some(DatabaseType::Firebird),
+                driver_profile: None,
                 identifier_quote: None,
                 catalog: None,
                 database: None,
@@ -4756,6 +4956,7 @@ mod tests {
         assert_eq!(
             build_data_grid_column_distinct_values_sql(DataGridColumnDistinctValuesSqlOptions {
                 database_type: Some(DatabaseType::Doris),
+                driver_profile: None,
                 identifier_quote: None,
                 catalog: Some("iceberg_catalog".to_string()),
                 database: None,
@@ -4773,6 +4974,7 @@ mod tests {
         assert_eq!(
             build_data_grid_column_distinct_values_sql(DataGridColumnDistinctValuesSqlOptions {
                 database_type: Some(DatabaseType::StarRocks),
+                driver_profile: None,
                 identifier_quote: None,
                 catalog: Some("hive_catalog".to_string()),
                 database: None,
@@ -4791,6 +4993,7 @@ mod tests {
         assert_eq!(
             build_data_grid_column_distinct_values_sql(DataGridColumnDistinctValuesSqlOptions {
                 database_type: Some(DatabaseType::Doris),
+                driver_profile: None,
                 identifier_quote: None,
                 catalog: Some("internal".to_string()),
                 database: None,
@@ -5234,7 +5437,8 @@ mod tests {
     fn prepares_oracle_clob_update_without_oversized_string_literals() {
         let clob = column("body", "CLOB", true, None);
         let large_value = "x".repeat(4205);
-        let literal = format_grid_assignment_sql_literal(&json!(large_value), Some(DatabaseType::Oracle), Some(&clob));
+        let literal =
+            format_grid_assignment_sql_literal(&json!(large_value), Some(DatabaseType::Oracle), Some(&clob), None);
         let chunks = literal
             .split("TO_CLOB('")
             .skip(1)
@@ -5246,21 +5450,26 @@ mod tests {
         assert_eq!(chunks[0].len(), ORACLE_LOB_LITERAL_CHUNK_BYTES);
         assert_eq!(chunks[1].len(), 4205 - ORACLE_LOB_LITERAL_CHUNK_BYTES);
         assert_eq!(
-            format_grid_assignment_sql_literal(&json!("short"), Some(DatabaseType::Oracle), Some(&clob)),
+            format_grid_assignment_sql_literal(&json!("short"), Some(DatabaseType::Oracle), Some(&clob), None),
             "'short'"
         );
         let nclob = column("body", "NCLOB", true, None);
-        assert!(format_grid_assignment_sql_literal(&json!(large_value), Some(DatabaseType::Oracle), Some(&nclob))
-            .starts_with("TO_NCLOB('"));
+        assert!(format_grid_assignment_sql_literal(
+            &json!(large_value),
+            Some(DatabaseType::Oracle),
+            Some(&nclob),
+            None
+        )
+        .starts_with("TO_NCLOB('"));
         let special_value = format!("{}'\\", "x".repeat(3998));
         let special_literal =
-            format_grid_assignment_sql_literal(&json!(special_value), Some(DatabaseType::Oracle), Some(&clob));
+            format_grid_assignment_sql_literal(&json!(special_value), Some(DatabaseType::Oracle), Some(&clob), None);
         assert!(special_literal.starts_with("TO_CLOB('"));
         assert!(special_literal.contains("''"));
         assert!(special_literal.contains("\\\\"));
         let varchar = column("body", "VARCHAR2(5000)", true, None);
         let varchar_literal =
-            format_grid_assignment_sql_literal(&json!(large_value), Some(DatabaseType::Oracle), Some(&varchar));
+            format_grid_assignment_sql_literal(&json!(large_value), Some(DatabaseType::Oracle), Some(&varchar), None);
         assert!(varchar_literal.starts_with("'"));
         assert!(!varchar_literal.contains("TO_CLOB("));
 
@@ -6116,6 +6325,41 @@ mod tests {
     }
 
     #[test]
+    fn mysql_join_result_delete_targets_only_the_resolved_source_primary_key() {
+        let result = prepare_data_grid_save(DataGridSaveStatementOptions {
+            database_type: Some(DatabaseType::Mysql),
+            identifier_quote: None,
+            table_meta: DataGridTableMeta {
+                catalog: None,
+                database: None,
+                schema: Some("lims".to_string()),
+                table_name: "lims_batchs_simple".to_string(),
+                primary_keys: vec!["id".to_string()],
+                columns: Some(vec![
+                    column("id", "bigint", false, None),
+                    column("sno", "integer", true, None),
+                    column("batchs_id", "bigint", false, None),
+                    column("simple_id", "bigint", false, None),
+                ]),
+            },
+            columns: vec!["id".to_string(), "sno".to_string(), "batchs_id".to_string(), "simple_id".to_string()],
+            source_columns: Some(vec![
+                Some("id".to_string()),
+                Some("sno".to_string()),
+                Some("batchs_id".to_string()),
+                Some("simple_id".to_string()),
+            ]),
+            rows: vec![vec![json!(2658055), json!(4), json!(57485), json!(492045)]],
+            dirty_rows: vec![],
+            deleted_rows: vec![0],
+            new_rows: vec![],
+        });
+
+        assert_eq!(result.validation_error, None);
+        assert_eq!(result.statements, vec!["DELETE FROM `lims`.`lims_batchs_simple` WHERE `id` = 2658055;"]);
+    }
+
+    #[test]
     fn prepares_oracle_timestamp_insert_from_iso_grid_value() {
         let result = prepare_data_grid_save(DataGridSaveStatementOptions {
             database_type: Some(DatabaseType::Oracle),
@@ -6530,6 +6774,76 @@ mod tests {
             "b'10101010'"
         );
         assert_eq!(format_grid_sql_literal(&json!("0"), Some(DatabaseType::Postgres), Some(&bit)), "'0'");
+    }
+
+    #[test]
+    fn formats_kingbase_bit_literals_for_both_compatibility_modes() {
+        let bit = column("flag", "pg_catalog.bit(1)", true, None);
+
+        assert_eq!(
+            format_grid_sql_literal_with_identifier_quote(
+                &json!("0"),
+                Some(DatabaseType::Kingbase),
+                Some(&bit),
+                Some("`"),
+            ),
+            "b'0'"
+        );
+        assert_eq!(
+            format_grid_sql_literal_with_identifier_quote(
+                &json!("10101010"),
+                Some(DatabaseType::Kingbase),
+                Some(&column("flags", "pg_catalog.bit(8)", true, None)),
+                Some("`"),
+            ),
+            "b'10101010'"
+        );
+        assert_eq!(
+            format_grid_sql_literal_with_identifier_quote(
+                &json!("0"),
+                Some(DatabaseType::Kingbase),
+                Some(&bit),
+                Some("\""),
+            ),
+            "b'0'"
+        );
+        assert_eq!(
+            format_grid_sql_literal_with_identifier_quote(
+                &json!(1),
+                Some(DatabaseType::Kingbase),
+                Some(&bit),
+                Some("\""),
+            ),
+            "b'1'"
+        );
+    }
+
+    #[test]
+    fn kingbase_bit_save_uses_bit_string_literals() {
+        let result = prepare_data_grid_save(DataGridSaveStatementOptions {
+            database_type: Some(DatabaseType::Kingbase),
+            identifier_quote: Some("`".to_string()),
+            table_meta: DataGridTableMeta {
+                catalog: None,
+                database: None,
+                schema: Some("public".to_string()),
+                table_name: "flags".to_string(),
+                primary_keys: vec!["id".to_string()],
+                columns: Some(vec![column("id", "int", false, None), column("flag", "pg_catalog.bit(1)", true, None)]),
+            },
+            columns: vec!["id".to_string(), "flag".to_string()],
+            source_columns: None,
+            rows: vec![vec![json!(1), json!("1")]],
+            dirty_rows: vec![(0, vec![(1, json!("0"))])],
+            deleted_rows: vec![],
+            new_rows: vec![],
+        });
+
+        assert_eq!(result.statements, vec!["UPDATE `public`.`flags` SET `flag` = b'0' WHERE `id` = 1;"],);
+        assert_eq!(
+            result.rollback_statements,
+            vec!["UPDATE `public`.`flags` SET `flag` = b'1' WHERE `id` = 1 AND `flag` = b'0';"],
+        );
     }
 
     #[test]

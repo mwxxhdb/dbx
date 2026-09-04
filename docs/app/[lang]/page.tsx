@@ -1,26 +1,24 @@
 import Link from "next/link";
 import type { Metadata } from "next";
-import type { CSSProperties } from "react";
 import { HeroProductStage } from "@/components/aceternity/HeroProductStage";
 import { InfiniteMovingCards } from "@/components/aceternity/InfiniteMovingCards";
 import { Spotlight } from "@/components/aceternity/Spotlight";
 import { LandingNav } from "@/components/landing/LandingNav";
 import { LandingFooter } from "@/components/landing/LandingFooter";
 import { InstallTabs } from "@/components/landing/InstallTabs";
-import { LandingLatestUpdates } from "@/components/landing/LandingLatestUpdates";
 import { RevealSection } from "@/components/landing/RevealSection";
 import { ContributorsWallContent } from "@/components/landing/ContributorsWall";
-import { ExpandableDatabaseGrid } from "@/components/landing/ExpandableDatabaseGrid";
+import { DatabasePillMarquee } from "@/components/landing/DatabasePillMarquee";
 import contributorSnapshot from "@/data/contributors.json";
 import { databaseSupport } from "@/data/databaseSupport";
 import type { ContributorActivityData } from "@/lib/contributorActivity";
 import { contributorsFromActivity } from "@/lib/contributors";
 import { getAppVersion } from "@/lib/appVersion";
-import { fetchChangelog } from "@/lib/changelog";
 import { fetchLatestReleaseInfo } from "@/lib/latestRelease";
 import { buildMetadata, getHtmlLang } from "@/lib/metadata";
 import { buildSoftwareApplicationStructuredData } from "@/lib/structuredData";
 import { ArrowRight, Bot, Database, FileCode, GitCompare, Network, Search, Shield, Table, Terminal, Zap } from "lucide-react";
+import { resolveLang, type DocsLang } from "@/lib/i18n";
 
 function formatStars(count: number) {
   if (count >= 1000) {
@@ -32,6 +30,12 @@ function formatStars(count: number) {
 
 function metrics(starLabel: string) {
   return {
+    tr: [
+      { value: "~20 MB", label: "masaüstü yükleyici" },
+      { value: "90+", label: "veritabanı motoru" },
+      { value: "2 mod", label: "masaüstü ve Docker" },
+      { value: starLabel, label: "GitHub yıldızı, tümüyle açık kaynak" },
+    ],
     en: [
       { value: "~20 MB", label: "desktop installer" },
       { value: "90+", label: "database engines" },
@@ -48,6 +52,32 @@ function metrics(starLabel: string) {
 }
 
 const workflows = {
+  tr: [
+    {
+      icon: Terminal,
+      title: "SQL yazın ve çalıştırın",
+      desc: "Meta veri farkındalıklı tamamlama, biçimlendirme, geçmiş ve seçili SQL çalıştırma sunan bir CodeMirror 6 düzenleyicisi.",
+      href: "/tr/docs/query-editor",
+    },
+    {
+      icon: Table,
+      title: "Veriye gözatın ve düzenleyin",
+      desc: "Sanallaştırılmış ızgaralar, satır içi düzenleme, WHERE/ORDER BY denetimleri, SQL önizlemesi ve dışa aktarma araçları.",
+      href: "/tr/docs/data-grid",
+    },
+    {
+      icon: Search,
+      title: "Şemaları keşfedin",
+      desc: "Veritabanları, şemalar, tablolar, sütunlar, dizinler, yabancı anahtarlar ve tetikleyiciler arasında sade bir kenar çubuğundan gezinin.",
+      href: "/tr/docs/schema-browser",
+    },
+    {
+      icon: GitCompare,
+      title: "Karşılaştırın ve taşıyın",
+      desc: "Şema karşılaştırma, tablo içe aktarma, veritabanı dışa aktarma, SQL dosyası çalıştırma ve motorlar arası veri aktarımı.",
+      href: "/tr/docs/schema-diff",
+    },
+  ],
   en: [
     {
       icon: Terminal,
@@ -103,6 +133,14 @@ const workflows = {
 };
 
 const capabilities = {
+  tr: [
+    { icon: Database, label: "Yerel Rust sürücüleri, JDBC çalışma zamanı gerekmez" },
+    { icon: Shield, label: "SSH tünelleri, şifreli yapılandırma dışa aktarımı, yıkıcı işlem korumaları" },
+    { icon: Bot, label: "Yapay zekâ asistanı ve Claude Code, Cursor ile agent'lar için MCP sunucusu" },
+    { icon: Network, label: "Daha derin analiz için ER diyagramları, şema karşılaştırma ve alan soy ağacı" },
+    { icon: FileCode, label: "CSV, Excel, SQL dosyaları, tam dışa aktarım ve motorlar arası aktarım" },
+    { icon: Zap, label: "Aynı projeden masaüstü uygulaması ve kendi sunucunuzda web dağıtımı" },
+  ],
   en: [
     { icon: Database, label: "Native Rust drivers, no JDBC runtime" },
     { icon: Shield, label: "SSH tunnels, encrypted config export, destructive action guards" },
@@ -284,7 +322,55 @@ const testimonials = {
   ],
 };
 
+const METRICS_LABEL: Record<DocsLang, string> = {
+  en: "DBX key metrics",
+  cn: "DBX 核心指标",
+  tr: "DBX temel ölçümleri",
+};
+
+// Testimonials are direct quotes from named people, so the Turkish page reuses
+// the English set verbatim instead of translating what they said.
+const localizedTestimonials = { ...testimonials, tr: testimonials.en };
+
 const i18nText = {
+  tr: {
+    heroTitle: "90+ veritabanını 20 MB ile yönetin!",
+    heroSubtitle: "DBX; bağlantı yönetimini, SQL düzenlemeyi, veri tablolarını, şema araçlarını, yapay zekâ desteğini ve kendi sunucunuzda barındırmayı tek bir hafif üründe toplar.",
+    download: "DBX'i indir",
+    downloadName: "DBX'i indir",
+    readDocs: "Dokümanları okuyun",
+    docsStart: "Buradan başlayın",
+    docsStartDesc: "DBX'i kurun, ilk bağlantınızı oluşturun ve temel iş akışını öğrenin.",
+    workflowsTitle: "Temel iş akışları",
+    workflowsDesc: "Dokümanlar, bir veritabanı istemcisinde gerçekten yaptığınız işlere göre düzenlenmiştir.",
+    supportTitle: "90+ veritabanını destekler",
+    supportDesc: "SQL, NoSQL, vektör, zaman serisi ve gömülü veritabanlarını, mesaj kuyruklarını ve uyumlu motorları tek yerden bağlayın.",
+    supportLink: "Tümünü görüntüle",
+    testimonialsTitle: "DBX ne işe yarar",
+    testimonialsDesc: "DBX'in kolaylaştırmak için tasarlandığı günlük veritabanı iş akışlarına daha yakından bir bakış.",
+    capabilitiesTitle: "Gerçek veritabanı işleri için tasarlandı",
+    contributorsTitle: "Toplulukla birlikte geliştirildi",
+    contributorsDesc: "DBX tümüyle açık kaynaktır. Her özellik, düzeltme ve sürücü bir katkıcıyla başlar.",
+    sponsorLabel: "Sponsorlar ve İş Ortakları",
+    qiniuSponsorDesc: "Qiniu Cloud, DBX'e nesne depolama, CDN ve diğer bulut altyapı kaynaklarını sağlıyor.",
+    qiniuSponsorAction: "Qiniu Cloud'u ziyaret edin",
+    rainyunSponsorDesc: "RainYun; bulut sunucular, fiziksel sunucular, oyun barındırma ve geliştirici dostu altyapı hizmetleri sunan bir bulut servis sağlayıcısıdır.",
+    rainyunSponsorAction: "RainYun'u ziyaret edin",
+    easysearchSponsorDesc: "Easysearch, Elasticsearch API'leriyle uyumlu kurumsal düzeyde dağıtık bir arama motorudur; tam metin, vektör ve coğrafi aramayı, gerçek zamanlı analitiği ve yapay zekâ yeteneklerini tek platformda birleştirir.",
+    easysearchSponsorAction: "Easysearch'ü ziyaret edin",
+    atlasCloudSponsorDesc: "Atlas Cloud, geliştiricilere sohbet, görsel, video ve ses alanlarında 400+ yapay zekâ modeli için tek ve birleşik bir API sunar.",
+    atlasCloudSponsorAction: "Atlas Cloud'u ziyaret edin",
+    trustasiaSponsorDesc: "TrustAsia, DBX için bulut tabanlı kod imzalama hizmeti sağlayarak otomatik CI/CD derlemeleriyle güvenilir yazılım üretilmesini sağlıyor.",
+    trustasiaSponsorAction: "TrustAsia'yı ziyaret edin",
+    jalapenoSponsorDesc: "Jalapeño Cloud, yapay zekâ altyapısı ve belirteç hesaplama platformudur; DBX'e özel giriş noktasıyla ücretsiz kredi ve yükleme bonusu sunar.",
+    jalapenoSponsorAction: "Jalapeño Cloud'u ziyaret edin",
+    astraflowSponsorDesc: "UCloud, Çin'in STAR Market borsasına kote ilk genel bulut sağlayıcısıdır; 28 küresel bölgede bulut sunucu, veritabanı ve CDN hizmeti verir. AstraFlow platformu 200+ yaygın büyük dil modeline tek tıklamayla erişim sağlar.",
+    astraflowSponsorAction: "UCloud'u ziyaret edin",
+    footerTitle: "DBX'i denemeye hazır mısınız?",
+    footerDesc: "Yerel çalışma için masaüstü uygulamasını kullanın ya da tarayıcıdan erişim için Docker sürümünü dağıtın.",
+    release: "En son sürüm",
+    docker: "Docker kurulumu",
+  },
   en: {
     heroTitle: "20 MB to manage 90+ databases!",
     heroSubtitle: "DBX brings connections, SQL editing, data grids, schema tools, AI assistance, and self-hosted access into one lightweight product.",
@@ -312,6 +398,12 @@ const i18nText = {
     easysearchSponsorAction: "Visit Easysearch",
     atlasCloudSponsorDesc: "Atlas Cloud gives developers one unified API for 400+ AI models across chat, image, video, and audio.",
     atlasCloudSponsorAction: "Visit Atlas Cloud",
+    trustasiaSponsorDesc: "TrustAsia provides cloud-based code signing service for DBX, enabling trusted software through automated CI/CD builds.",
+    trustasiaSponsorAction: "Visit TrustAsia",
+    jalapenoSponsorDesc: "Jalapeño Cloud is an AI infrastructure and token compute platform, with an exclusive DBX entry offering free credits and top-up bonuses.",
+    jalapenoSponsorAction: "Visit Jalapeño Cloud",
+    astraflowSponsorDesc: "UCloud is the first public cloud provider listed on China's STAR Market, with 28 global regions for cloud hosting, databases, and CDN; its AstraFlow platform offers one-click access to 200+ mainstream LLMs.",
+    astraflowSponsorAction: "Visit UCloud",
     footerTitle: "Ready to try DBX?",
     footerDesc: "Use the desktop app for local work, or deploy the Docker version for browser-based access.",
     release: "Latest release",
@@ -344,6 +436,12 @@ const i18nText = {
     easysearchSponsorAction: "访问 Easysearch",
     atlasCloudSponsorDesc: "Atlas Cloud 为开发者提供统一的多模态 AI API，可通过一个接口访问聊天、图像、视频和音频等 400+ 模型。",
     atlasCloudSponsorAction: "访问 Atlas Cloud",
+    trustasiaSponsorDesc: "由 TrustAsia 提供代码签名云签服务，实现 CICD 自动化构建可信软件。",
+    trustasiaSponsorAction: "访问 TrustAsia",
+    jalapenoSponsorDesc: "Jalapeño Cloud 是 AI 基础设施与 Token 算力平台，通过 DBX 专属入口可享新用户免费额度与充值加赠。",
+    jalapenoSponsorAction: "访问 Jalapeño Cloud",
+    astraflowSponsorDesc: "UCloud 优刻得是国内首家公有云科创板上市公司，覆盖国内、亚洲、欧洲、北美等 28 个地域的云主机、数据库、CDN 等服务，注册享新客优惠 0.9 折起；星图 AstraFlow 大模型平台支持主流 200+ 大模型一键调用。",
+    astraflowSponsorAction: "访问 UCloud 优刻得",
     footerTitle: "准备试试 DBX？",
     footerDesc: "本地工作使用桌面版，需要浏览器访问时部署 Docker 版。",
     release: "最新版本",
@@ -352,6 +450,10 @@ const i18nText = {
 };
 
 const landingMeta = {
+  tr: {
+    title: "DBX - 90+ veritabanını 20 MB ile yönetin!",
+    description: "DBX; bağlantı yönetimini, SQL düzenlemeyi, veri tablolarını, şema araçlarını, yapay zekâ desteğini ve kendi sunucunuzda barındırmayı tek bir hafif üründe toplar.",
+  },
   en: {
     title: "DBX - 20 MB to manage 90+ databases!",
     description: "DBX brings connections, SQL editing, data grids, schema tools, AI assistance, and self-hosted access into one lightweight product.",
@@ -364,7 +466,7 @@ const landingMeta = {
 
 export async function generateMetadata({ params }: { params: Promise<{ lang: string }> }): Promise<Metadata> {
   const { lang } = await params;
-  const l = lang === "cn" ? "cn" : "en";
+  const l = resolveLang(lang);
   const meta = landingMeta[l];
 
   return buildMetadata({
@@ -378,7 +480,7 @@ export async function generateMetadata({ params }: { params: Promise<{ lang: str
 
 export default async function LandingPage({ params }: { params: Promise<{ lang: string }> }) {
   const { lang } = await params;
-  const l = lang === "cn" ? "cn" : "en";
+  const l = resolveLang(lang);
   const t = i18nText[l];
   const workflowItems = workflows[l];
   const capabilityItems = capabilities[l];
@@ -386,10 +488,10 @@ export default async function LandingPage({ params }: { params: Promise<{ lang: 
   const starLabel = formatStars(contributorData.stars);
   const metricItems = metrics(starLabel)[l];
   const appVersion = getAppVersion();
-  const [initialChangelog, initialLatestRelease] = await Promise.all([fetchChangelog(l), fetchLatestReleaseInfo()]);
+  const initialLatestRelease = await fetchLatestReleaseInfo();
   const contributors = contributorsFromActivity(contributorData.contributors);
   const initialDownloadVersion = initialLatestRelease?.version ?? appVersion;
-  const testimonialItems = testimonials[l];
+  const testimonialItems = localizedTestimonials[l];
   const softwareStructuredData = buildSoftwareApplicationStructuredData(l, initialDownloadVersion);
   const sponsorItems = [
     {
@@ -409,20 +511,44 @@ export default async function LandingPage({ params }: { params: Promise<{ lang: 
       action: t.qiniuSponsorAction,
     },
     {
-      name: "Easysearch",
-      href: "https://easysearch.cn",
-      logo: "/sponsors/easysearch.png",
-      logoClass: "w-full max-w-[100px] object-contain",
-      description: t.easysearchSponsorDesc,
-      action: t.easysearchSponsorAction,
-    },
-    {
       name: "Atlas Cloud",
       href: "https://www.atlascloud.ai/?ref=6YYXWA",
       logo: "https://www.atlascloud.ai/logo.svg",
       logoClass: "w-full max-w-[100px] object-contain",
       description: t.atlasCloudSponsorDesc,
       action: t.atlasCloudSponsorAction,
+    },
+    {
+      name: "TrustAsia",
+      href: "https://www.trustasia.com/ssl/trustasia/code-signing",
+      logo: "/sponsors/trustasia.png",
+      logoClass: "w-full max-w-[120px] object-contain",
+      description: t.trustasiaSponsorDesc,
+      action: t.trustasiaSponsorAction,
+    },
+    {
+      name: "Jalapeño Cloud",
+      href: "https://www.jalapeno-cloud.ai/DBX",
+      logo: "/sponsors/jalapeno-card.png",
+      logoClass: "w-full max-w-[96px] object-contain",
+      description: t.jalapenoSponsorDesc,
+      action: t.jalapenoSponsorAction,
+    },
+    {
+      name: "AstraFlow",
+      href: "https://www.ucloud.cn/site/active/kuaijiesale.html?ytag=geo_waituo_github_dbx",
+      logo: "/sponsors/astraflow-card.png",
+      logoClass: "w-full max-w-[100px] object-contain",
+      description: t.astraflowSponsorDesc,
+      action: t.astraflowSponsorAction,
+    },
+    {
+      name: "Easysearch",
+      href: "https://easysearch.cn",
+      logo: "/sponsors/easysearch.png",
+      logoClass: "w-full max-w-[100px] object-contain",
+      description: t.easysearchSponsorDesc,
+      action: t.easysearchSponsorAction,
     },
   ];
 
@@ -450,7 +576,7 @@ export default async function LandingPage({ params }: { params: Promise<{ lang: 
       </section>
 
       {/* Metrics */}
-      <RevealSection className="grid grid-cols-4 gap-3 max-w-[1180px] mx-auto px-7 pt-6 pb-11 [animation:landing-rise_0.72s_ease-out_0.1s_both] max-[760px]:grid-cols-2 max-[760px]:gap-2.5 max-[760px]:px-[18px] max-[760px]:pb-7" aria-label={l === "cn" ? "DBX 核心指标" : "DBX key metrics"}>
+      <RevealSection className="grid grid-cols-4 gap-3 max-w-[1180px] mx-auto px-7 pt-6 pb-11 [animation:landing-rise_0.72s_ease-out_0.1s_both] max-[760px]:grid-cols-2 max-[760px]:gap-2.5 max-[760px]:px-[18px] max-[760px]:pb-7" aria-label={METRICS_LABEL[l]}>
         {metricItems.map((item) => (
           <div key={item.label} data-stagger className="landing-glass-card min-h-[118px] rounded-[10px] p-[22px] max-[760px]:min-h-[88px] max-[760px]:p-4">
             <strong className="block text-landing-ink text-2xl font-[720]">{item.value}</strong>
@@ -504,35 +630,7 @@ export default async function LandingPage({ params }: { params: Promise<{ lang: 
             </Link>
           </div>
         </div>
-        <ExpandableDatabaseGrid lang={l}>
-          {databaseSupport.map((db) => {
-            const isCta = "href" in db && db.href;
-            const nameSizeClass = db.name.length >= 14
-              ? "text-[11px] tracking-[-0.035em] max-[760px]:text-[9px]"
-              : db.name.length >= 11
-                ? "text-xs tracking-[-0.015em] max-[760px]:text-[10px]"
-                : "text-sm max-[760px]:text-[11px]";
-            const CardTag = isCta ? "a" : "div";
-            return (
-              <CardTag
-                className={`landing-db-card grid place-items-center aspect-square rounded-[10px] px-2.5 py-[18px] max-[760px]:px-1.5 max-[760px]:py-2.5 ${isCta ? "border-2 border-dashed border-[color-mix(in_srgb,var(--color-landing-blue)_40%,transparent)] hover:border-[color-mix(in_srgb,var(--color-landing-blue)_70%,transparent)] transition-colors cursor-pointer" : ""}`}
-                key={db.name}
-                {...(isCta ? { href: db.href, target: "_blank", rel: "noopener noreferrer" } : {})}
-                style={{ "--db-tone": db.tone } as CSSProperties}
-                data-stagger
-              >
-                <div className="landing-db-icon grid place-items-center w-12 h-12 mb-[15px] max-[760px]:size-8 max-[760px]:mb-2">
-                  {isCta ? (
-                    <span className="grid place-items-center w-10 h-10 rounded-full border-2 border-dashed text-landing-blue border-landing-blue text-2xl leading-none">+</span>
-                  ) : (
-                    <img src={db.icon} alt="" width={38} height={38} loading="lazy" decoding="async" className="block w-[38px] h-[38px] object-contain max-[760px]:size-7" />
-                  )}
-                </div>
-                <strong className={`block w-full min-w-0 px-1 font-[650] leading-[1.2] text-center [overflow-wrap:anywhere] min-[761px]:whitespace-nowrap ${nameSizeClass} ${isCta ? "text-landing-blue" : "text-[color-mix(in_srgb,var(--color-landing-ink)_92%,var(--color-landing-muted))]"}`}>{db.name}</strong>
-              </CardTag>
-            );
-          })}
-        </ExpandableDatabaseGrid>
+        <DatabasePillMarquee items={databaseSupport.filter((db) => !db.href)} />
       </RevealSection>
 
       {/* Testimonials */}
@@ -588,9 +686,6 @@ export default async function LandingPage({ params }: { params: Promise<{ lang: 
           ))}
         </div>
       </RevealSection>
-
-      {/* Updates */}
-      <LandingLatestUpdates lang={l} fallbackVersion={appVersion} initialRelease={initialChangelog.releases[0]} initialLatestRelease={initialLatestRelease} />
 
       {/* Final CTA */}
       <RevealSection className="flex items-center justify-between gap-6 max-w-[1180px] mx-auto px-7 border border-landing-line rounded-[10px] bg-landing-panel mt-[72px] mb-14 py-[30px] max-[760px]:block max-[760px]:px-[18px]">

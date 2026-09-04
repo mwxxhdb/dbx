@@ -264,6 +264,42 @@ export interface DependencyGraph {
   nodes: DependencyNode[];
 }
 
+interface RawSchemaDiffDependencyNode {
+  tableName?: unknown;
+  table_name?: unknown;
+  dependsOn?: unknown;
+  depends_on?: unknown;
+  dependedBy?: unknown;
+  depended_by?: unknown;
+}
+
+interface RawSchemaDiffDependencyGraph {
+  nodes?: RawSchemaDiffDependencyNode[] | Record<string, RawSchemaDiffDependencyNode>;
+}
+
+export function normalizeSchemaDiffDependencyGraph(graph: unknown): DependencyGraph | null {
+  if (!graph || typeof graph !== "object") return null;
+
+  const rawNodes = (graph as RawSchemaDiffDependencyGraph).nodes;
+  const entries = Array.isArray(rawNodes) ? rawNodes : rawNodes && typeof rawNodes === "object" ? Object.values(rawNodes) : [];
+  const nodes = entries.flatMap((node) => {
+    const tableName = typeof node.tableName === "string" ? node.tableName : typeof node.table_name === "string" ? node.table_name : "";
+    if (!tableName) return [];
+
+    const dependsOn = Array.isArray(node.dependsOn) ? node.dependsOn : Array.isArray(node.depends_on) ? node.depends_on : [];
+    const dependedBy = Array.isArray(node.dependedBy) ? node.dependedBy : Array.isArray(node.depended_by) ? node.depended_by : [];
+    return [
+      {
+        tableName,
+        dependsOn: dependsOn.filter((name): name is string => typeof name === "string"),
+        dependedBy: dependedBy.filter((name): name is string => typeof name === "string"),
+      },
+    ];
+  });
+
+  return nodes.length > 0 ? { nodes } : null;
+}
+
 export interface MissingRollbackObject {
   kind: string;
   name: string;
@@ -355,20 +391,26 @@ function tableObjectId(tableName: string): string {
   return `table-${tableName}`;
 }
 
-function columnObjectId(tableName: string, columnName: string): string {
-  return `col-${tableName}-${columnName}`;
+type SchemaDiffChildKind = "column" | "index" | "foreignKey" | "trigger";
+
+const SCHEMA_DIFF_CHILD_ID_PREFIX: Record<SchemaDiffChildKind, string> = {
+  column: "col",
+  index: "idx",
+  foreignKey: "fk",
+  trigger: "trg",
+};
+
+function diffChildObjectId(kind: SchemaDiffChildKind, tableName: string, childName: string, siblings: readonly { name: string }[], index: number): string {
+  const baseId = `${SCHEMA_DIFF_CHILD_ID_PREFIX[kind]}-${tableName}-${childName}`;
+  const duplicateCount = siblings.filter((sibling) => sibling.name === childName).length;
+  if (duplicateCount < 2) return baseId;
+
+  const occurrence = siblings.slice(0, index).filter((sibling) => sibling.name === childName).length;
+  return `${baseId}-${occurrence}`;
 }
 
-function indexObjectId(tableName: string, indexName: string): string {
-  return `idx-${tableName}-${indexName}`;
-}
-
-function foreignKeyObjectId(tableName: string, foreignKeyName: string): string {
-  return `fk-${tableName}-${foreignKeyName}`;
-}
-
-function triggerObjectId(tableName: string, triggerName: string): string {
-  return `trg-${tableName}-${triggerName}`;
+function findDiffChildIndex(kind: SchemaDiffChildKind, tableName: string, siblings: readonly { name: string }[] | undefined, objectId: string): number {
+  return (siblings ?? []).findIndex((sibling, index) => diffChildObjectId(kind, tableName, sibling.name, siblings ?? [], index) === objectId);
 }
 
 function tableOptionObjectId(tableName: string): string {
@@ -577,11 +619,15 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
     const isRenamed = diff.type === "renamed";
     const newName = isRenamed && renameCandidates ? (renameCandidates.find((rc) => rc.sourceName === diff.name)?.targetName ?? diff.name) : undefined;
     const tableId = tableObjectId(diff.name);
+    const columns = diff.columns ?? [];
+    const indexes = diff.indexes ?? [];
+    const foreignKeys = diff.foreignKeys ?? [];
+    const triggers = diff.triggers ?? [];
     const children: SchemaDiffObject[] =
       opType === "modify"
         ? [
-            ...(diff.columns?.map((column) => ({
-              id: columnObjectId(diff.name, column.name),
+            ...columns.map((column, index) => ({
+              id: diffChildObjectId("column", diff.name, column.name, columns, index),
               operationType: getOperationType(column.type),
               objectKind: "column" as DiffObjectKind,
               name: column.name,
@@ -591,9 +637,9 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
               changes: column.changes,
               parentId: tableId,
               parentName: diff.name,
-            })) || []),
-            ...(diff.indexes?.map((index) => ({
-              id: indexObjectId(diff.name, index.name),
+            })),
+            ...indexes.map((index, childIndex) => ({
+              id: diffChildObjectId("index", diff.name, index.name, indexes, childIndex),
               // A modified index is one DROP + CREATE deploy unit.
               operationType: index.type === "modified" ? ("delete" as DiffOperationType) : getOperationType(index.type),
               objectKind: "index" as DiffObjectKind,
@@ -604,9 +650,9 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
               changes: index.changes,
               parentId: tableId,
               parentName: diff.name,
-            })) || []),
-            ...(diff.foreignKeys?.map((foreignKey) => ({
-              id: foreignKeyObjectId(diff.name, foreignKey.name),
+            })),
+            ...foreignKeys.map((foreignKey, index) => ({
+              id: diffChildObjectId("foreignKey", diff.name, foreignKey.name, foreignKeys, index),
               // Modified foreign keys are also dropped before they are recreated.
               operationType: foreignKey.type === "modified" ? ("delete" as DiffOperationType) : getOperationType(foreignKey.type),
               objectKind: "foreignKey" as DiffObjectKind,
@@ -617,9 +663,9 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
               changes: foreignKey.changes,
               parentId: tableId,
               parentName: diff.name,
-            })) || []),
-            ...(diff.triggers?.map((trigger) => ({
-              id: triggerObjectId(diff.name, trigger.name),
+            })),
+            ...triggers.map((trigger, index) => ({
+              id: diffChildObjectId("trigger", diff.name, trigger.name, triggers, index),
               operationType: getOperationType(trigger.type),
               objectKind: "trigger" as DiffObjectKind,
               name: trigger.name,
@@ -629,7 +675,7 @@ export function convertToSchemaDiffObjects(tableDiffs: TableDiff[], functionDiff
               changes: trigger.changes,
               parentId: tableId,
               parentName: diff.name,
-            })) || []),
+            })),
             ...(diff.sourceTableComment !== diff.targetTableComment
               ? [
                   {
@@ -769,10 +815,10 @@ export function selectSchemaDiffInput(result: SchemaDiffPreparation, objects: Sc
       return tableObject.selected ? [{ ...diff, syncSql: undefined }] : [];
     }
 
-    const columns = diff.columns?.filter((column) => selectedIds.has(columnObjectId(diff.name, column.name))) ?? [];
-    const indexes = diff.indexes?.filter((index) => selectedIds.has(indexObjectId(diff.name, index.name))) ?? [];
-    const foreignKeys = diff.foreignKeys?.filter((foreignKey) => selectedIds.has(foreignKeyObjectId(diff.name, foreignKey.name))) ?? [];
-    const triggers = diff.triggers?.filter((trigger) => selectedIds.has(triggerObjectId(diff.name, trigger.name))) ?? [];
+    const columns = diff.columns?.filter((column, index) => selectedIds.has(diffChildObjectId("column", diff.name, column.name, diff.columns ?? [], index))) ?? [];
+    const indexes = diff.indexes?.filter((index, childIndex) => selectedIds.has(diffChildObjectId("index", diff.name, index.name, diff.indexes ?? [], childIndex))) ?? [];
+    const foreignKeys = diff.foreignKeys?.filter((foreignKey, index) => selectedIds.has(diffChildObjectId("foreignKey", diff.name, foreignKey.name, diff.foreignKeys ?? [], index))) ?? [];
+    const triggers = diff.triggers?.filter((trigger, index) => selectedIds.has(diffChildObjectId("trigger", diff.name, trigger.name, diff.triggers ?? [], index))) ?? [];
     const includeTableOptions = selectedIds.has(tableOptionObjectId(diff.name));
 
     if (columns.length === 0 && indexes.length === 0 && foreignKeys.length === 0 && triggers.length === 0 && !includeTableOptions) {
@@ -800,6 +846,50 @@ export function selectSchemaDiffInput(result: SchemaDiffPreparation, objects: Sc
     ruleDiffs: (result.ruleDiffs ?? []).filter((diff) => selectedIds.has(`rule-${diff.name}`)),
     ownerDiffs: (result.ownerDiffs ?? []).filter((diff) => selectedIds.has(`owner-${diff.objectName}`)),
   };
+}
+
+function projectSchemaDiffObjectSelection(object: SchemaDiffObject, focusedObjectId: string, selectDescendants: boolean, dependencyNames: ReadonlySet<string>): SchemaDiffObject {
+  const isFocused = object.id === focusedObjectId;
+  const isDependency = !object.parentId && dependencyNames.has(object.name);
+  const selectChildren = selectDescendants || isFocused || isDependency;
+  return {
+    ...object,
+    selected: isFocused || selectDescendants || isDependency,
+    children: object.children?.map((child) => projectSchemaDiffObjectSelection(child, focusedObjectId, selectChildren, dependencyNames)),
+  };
+}
+
+function schemaDiffDependencyClosure(result: SchemaDiffPreparation, objects: SchemaDiffObject[], objectId: string): Set<string> {
+  const focusedObject = findSchemaDiffObject(objects, objectId);
+  if (!focusedObject) return new Set();
+
+  const rootObject = focusedObject.parentId ? findSchemaDiffObject(objects, focusedObject.parentId) : focusedObject;
+  if (!rootObject) return new Set();
+
+  const dependencyNodes = new Map((normalizeSchemaDiffDependencyGraph(result.dependencyGraph)?.nodes ?? []).map((node) => [node.tableName, node]));
+  const dependencies = new Set<string>();
+  const pending = [rootObject.name];
+  while (pending.length > 0) {
+    const name = pending.pop();
+    if (!name) continue;
+    for (const dependency of dependencyNodes.get(name)?.dependsOn ?? []) {
+      if (dependency === rootObject.name || dependencies.has(dependency)) continue;
+      dependencies.add(dependency);
+      pending.push(dependency);
+    }
+  }
+  return dependencies;
+}
+
+/** Project one focused tree object onto a fresh selection without mutating checkbox state. */
+export function selectSchemaDiffInputForObject(result: SchemaDiffPreparation, objects: SchemaDiffObject[], objectId: string): SelectedSchemaDiffInput {
+  if (!findSchemaDiffObject(objects, objectId)) {
+    return { diffs: [], functionDiffs: [], sequenceDiffs: [], ruleDiffs: [], ownerDiffs: [] };
+  }
+
+  const dependencyNames = schemaDiffDependencyClosure(result, objects, objectId);
+  const focusedSelection = objects.map((object) => projectSchemaDiffObjectSelection(object, objectId, false, dependencyNames));
+  return selectSchemaDiffInput(result, focusedSelection);
 }
 
 export function buildDeploySqlForObjects(objects: SchemaDiffObject[]): string {
@@ -1046,17 +1136,25 @@ export function setSchemaDiffObjectSelectedWithDependencies(objects: SchemaDiffO
     if (!tableObject || !tableDiff) return;
     setSchemaDiffObjectSelected(objects, id, value);
 
-    const child = (kind: DiffObjectKind, name: string) => tableObject.children?.find((candidate) => candidate.objectKind === kind && candidate.name === name);
+    const child = <Child extends { name: string }>(kind: SchemaDiffChildKind, collection: readonly Child[] | undefined, index: number) => {
+      const candidate = collection?.[index];
+      if (!candidate) return undefined;
+
+      const childId = diffChildObjectId(kind, tableObject.name, candidate.name, collection, index);
+      return tableObject.children?.find((candidateObject) => candidateObject.id === childId);
+    };
     const applyColumn = (name: string, value: boolean) => {
-      const columnDiff = tableDiff.columns?.find((column) => column.name === name);
-      const columnObject = child("column", name);
+      const columnIndex = tableDiff.columns?.findIndex((column) => column.name === name) ?? -1;
+      const columnDiff = columnIndex < 0 ? undefined : tableDiff.columns?.[columnIndex];
+      const columnObject = columnIndex < 0 ? undefined : child("column", tableDiff.columns, columnIndex);
       if (!columnDiff || !columnObject) return;
       if (value && !["added", "renamed"].includes(columnDiff.type)) return;
       apply(columnObject.id, value);
     };
 
     if (object.objectKind === "column") {
-      const columnDiff = tableDiff.columns?.find((column) => column.name === object.name);
+      const columnIndex = findDiffChildIndex("column", tableObject.name, tableDiff.columns, object.id);
+      const columnDiff = columnIndex < 0 ? undefined : tableDiff.columns?.[columnIndex];
       if (!columnDiff) return;
 
       if (value && columnDiff.type === "added" && columnDiff.addPosition && typeof columnDiff.addPosition === "object") {
@@ -1064,47 +1162,49 @@ export function setSchemaDiffObjectSelectedWithDependencies(objects: SchemaDiffO
       }
 
       if (value && columnDiff.type === "removed") {
-        for (const index of tableDiff.indexes ?? []) {
-          if (!["removed", "modified"].includes(index.type) || !index.target?.columns.includes(columnDiff.name)) continue;
-          const indexObject = child("index", index.name);
+        for (const [index, indexDiff] of (tableDiff.indexes ?? []).entries()) {
+          if (!["removed", "modified"].includes(indexDiff.type) || !indexDiff.target?.columns.includes(columnDiff.name)) continue;
+          const indexObject = child("index", tableDiff.indexes, index);
           if (indexObject) apply(indexObject.id, true);
         }
-        for (const foreignKey of tableDiff.foreignKeys ?? []) {
+        for (const [index, foreignKey] of (tableDiff.foreignKeys ?? []).entries()) {
           if (!["removed", "modified"].includes(foreignKey.type) || foreignKey.target?.column !== columnDiff.name) continue;
-          const foreignKeyObject = child("foreignKey", foreignKey.name);
+          const foreignKeyObject = child("foreignKey", tableDiff.foreignKeys, index);
           if (foreignKeyObject) apply(foreignKeyObject.id, true);
         }
       }
 
       if (!value && ["added", "renamed"].includes(columnDiff.type)) {
-        for (const dependentColumn of tableDiff.columns ?? []) {
+        for (const [index, dependentColumn] of (tableDiff.columns ?? []).entries()) {
           if (dependentColumn.type !== "added" || !dependentColumn.addPosition || typeof dependentColumn.addPosition !== "object" || dependentColumn.addPosition.after !== columnDiff.name) continue;
-          const dependentObject = child("column", dependentColumn.name);
+          const dependentObject = child("column", tableDiff.columns, index);
           if (dependentObject) apply(dependentObject.id, false);
         }
-        for (const index of tableDiff.indexes ?? []) {
-          const sourceColumns = [...(index.source?.columns ?? []), ...(index.source?.included_columns ?? [])];
-          if (!["added", "modified"].includes(index.type) || !sourceColumns.includes(columnDiff.name)) continue;
-          const indexObject = child("index", index.name);
+        for (const [index, indexDiff] of (tableDiff.indexes ?? []).entries()) {
+          const sourceColumns = [...(indexDiff.source?.columns ?? []), ...(indexDiff.source?.included_columns ?? [])];
+          if (!["added", "modified"].includes(indexDiff.type) || !sourceColumns.includes(columnDiff.name)) continue;
+          const indexObject = child("index", tableDiff.indexes, index);
           if (indexObject) apply(indexObject.id, false);
         }
-        for (const foreignKey of tableDiff.foreignKeys ?? []) {
+        for (const [index, foreignKey] of (tableDiff.foreignKeys ?? []).entries()) {
           if (!["added", "modified"].includes(foreignKey.type) || foreignKey.source?.column !== columnDiff.name) continue;
-          const foreignKeyObject = child("foreignKey", foreignKey.name);
+          const foreignKeyObject = child("foreignKey", tableDiff.foreignKeys, index);
           if (foreignKeyObject) apply(foreignKeyObject.id, false);
         }
       }
     }
 
     if (value && object.objectKind === "index") {
-      const index = tableDiff.indexes?.find((candidate) => candidate.name === object.name);
+      const indexIndex = findDiffChildIndex("index", tableObject.name, tableDiff.indexes, object.id);
+      const index = indexIndex < 0 ? undefined : tableDiff.indexes?.[indexIndex];
       for (const columnName of [...(index?.source?.columns ?? []), ...(index?.source?.included_columns ?? [])]) {
         applyColumn(columnName, true);
       }
     }
 
     if (value && object.objectKind === "foreignKey") {
-      const foreignKey = tableDiff.foreignKeys?.find((candidate) => candidate.name === object.name);
+      const foreignKeyIndex = findDiffChildIndex("foreignKey", tableObject.name, tableDiff.foreignKeys, object.id);
+      const foreignKey = foreignKeyIndex < 0 ? undefined : tableDiff.foreignKeys?.[foreignKeyIndex];
       if (foreignKey?.source?.column) applyColumn(foreignKey.source.column, true);
     }
   };
@@ -1208,7 +1308,13 @@ export function groupDiffObjects(objects: SchemaDiffObject[]): OperationGroup[] 
     },
   };
 
-  for (const obj of schemaDiffReviewObjects(objects)) {
+  // Classification is presence-based (DBeaver structure-compare semantics): an
+  // object that exists on both sides keeps operationType "modify" and carries
+  // its per-child operations in the drill-down, so only target-only objects
+  // ("delete") and source-only objects ("create") appear in those groups. A
+  // both-side table must never be re-bucketed as delete/create just because
+  // some of its columns or indexes differ.
+  for (const obj of objects) {
     groups[obj.operationType][obj.objectKind].push(obj);
   }
 
@@ -1240,32 +1346,6 @@ export function groupDiffObjects(objects: SchemaDiffObject[]): OperationGroup[] 
       expanded: opType !== "none",
       typeGroups,
     };
-  });
-}
-
-function schemaDiffReviewObjects(objects: SchemaDiffObject[]): SchemaDiffObject[] {
-  return objects.flatMap((object) => {
-    const children = object.children?.filter((child) => child.operationType !== "none") ?? [];
-    if (object.operationType !== "modify" || children.length === 0) return [object];
-
-    const operationOrder: DiffOperationType[] = ["modify", "create", "delete"];
-    return operationOrder.flatMap((operationType): SchemaDiffObject[] => {
-      const operationChildren = children.filter((child) => child.operationType === operationType);
-      if (operationChildren.length === 0) return [];
-      return [
-        {
-          ...object,
-          id: `review-${operationType}-${object.id}`,
-          operationType,
-          selected: operationChildren.every((child) => child.selected),
-          sourceName: operationType === "delete" ? undefined : object.sourceName,
-          targetName: operationType === "create" ? undefined : object.targetName,
-          children: operationChildren,
-          parentId: object.id,
-          changes: operationChildren.flatMap((child) => child.changes ?? []),
-        },
-      ];
-    });
   });
 }
 

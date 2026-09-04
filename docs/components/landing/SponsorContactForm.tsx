@@ -2,6 +2,7 @@
 
 import type { FormEvent } from "react";
 import { Send } from "lucide-react";
+import type { DocsLang } from "@/lib/i18n";
 
 const CONTACT_EMAIL = "1156263951@qq.com";
 
@@ -33,6 +34,33 @@ const i18n = {
       source: "Source page",
     },
   },
+  tr: {
+    nameLabel: "Ad",
+    namePlaceholder: "Size nasıl hitap edelim?",
+    emailLabel: "E-posta",
+    emailPlaceholder: "siz@sirket.com",
+    organizationLabel: "Kurum",
+    optional: "isteğe bağlı",
+    organizationPlaceholder: "Şirket, ekip veya topluluk",
+    supportTypeLabel: "Destek türü",
+    supportTypes: ["Finansal sponsorluk", "Altyapı veya hizmet", "Geliştirici araçları", "Topluluk iş birliği", "Diğer"],
+    messageLabel: "DBX'i nasıl desteklemek istersiniz?",
+    messagePlaceholder: "Fikrinizi, sunabileceğiniz kaynakları, öngörülen zaman planını ve öneriyi anlamamıza yardımcı olacak diğer bilgileri paylaşın.",
+    submit: "E-posta ile devam et",
+    privacy: "Bu, e-posta uygulamanızı hazır bir mesajla açar. DBX form içeriğini bu sitede saklamaz.",
+    alternatives: "Bize ulaşmanın diğer yolları",
+    qq: "QQ: 86554840",
+    subject: "DBX sponsorluk başvurusu",
+    emailBody: {
+      greeting: "Merhaba DBX ekibi,",
+      name: "Ad",
+      email: "E-posta",
+      organization: "Kurum",
+      supportType: "Destek türü",
+      message: "Mesaj",
+      source: "Kaynak sayfa",
+    },
+  },
   cn: {
     nameLabel: "姓名",
     namePlaceholder: "怎么称呼你？",
@@ -62,7 +90,7 @@ const i18n = {
   },
 };
 
-export function SponsorContactForm({ lang }: { lang: "en" | "cn" }) {
+export function SponsorContactForm({ lang }: { lang: DocsLang }) {
   const t = i18n[lang];
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -88,7 +116,7 @@ export function SponsorContactForm({ lang }: { lang: "en" | "cn" }) {
   }
 
   const fieldClassName =
-    "mt-2 min-h-11 w-full rounded-lg border border-landing-line bg-[#0d1422] px-3.5 text-sm text-landing-ink outline-none transition placeholder:text-[#65758b] focus:border-[#6ea8ff]/70 focus:ring-2 focus:ring-[#6ea8ff]/15";
+    "mt-2 min-h-11 w-full rounded-lg border border-landing-line bg-[#0e0f13] px-3.5 text-sm text-landing-ink outline-none transition placeholder:text-[#6b7078] focus:border-[#6ea8ff]/70 focus:ring-2 focus:ring-[#6ea8ff]/15";
 
   return (
     <form onSubmit={handleSubmit} className="grid gap-5" aria-label={t.subject}>
@@ -129,7 +157,7 @@ export function SponsorContactForm({ lang }: { lang: "en" | "cn" }) {
         <p className="max-w-[440px] text-xs leading-relaxed text-landing-muted">{t.privacy}</p>
         <button
           type="submit"
-          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#f2f7ff] px-5 text-sm font-[720] text-[#0b1120] transition hover:-translate-y-0.5 hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-landing-sky"
+          className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-lg bg-[#f0f1f4] px-5 text-sm font-[720] text-[#0a0b0e] transition hover:-translate-y-0.5 hover:bg-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-landing-sky"
         >
           <Send aria-hidden="true" size={16} strokeWidth={2.2} />
           {t.submit}

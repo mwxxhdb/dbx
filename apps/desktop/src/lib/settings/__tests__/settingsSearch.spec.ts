@@ -66,6 +66,18 @@ describe("settings search", () => {
     expect(SETTINGS_SEARCH_DEFINITIONS.map((definition) => definition.id)).not.toContain("editor-global-query-timeout");
   });
 
+  it("indexes the multi-statement default view and its settings control", () => {
+    expect(SETTINGS_SEARCH_DEFINITIONS).toContainEqual({
+      id: "multi-statement-default-view",
+      category: "data",
+      titleKey: "settings.multiStatementDefaultView",
+      descriptionKey: "settings.multiStatementDefaultViewDescription",
+      targetId: "multi-statement-default-view",
+    });
+    expect(settingsDialogSource).toContain('data-settings-search-id="multi-statement-default-view"');
+    expect(settingsDialogSource).toContain('v-model="editMultiStatementDefaultView"');
+  });
+
   it("matches translated title, description, and category without changing declared order", () => {
     const entries = resolveSettingsSearchEntries(definitions, { isWeb: false, visibleCategories: allCategories }, translate, categoryLabels);
     expect(searchSettings(entries, "TYPEFACE", "en").map((entry) => entry.id)).toEqual(["font"]);
@@ -89,7 +101,7 @@ describe("settings search", () => {
   });
 
   it("defines the WebDAV Web-runtime notice in every supported locale", () => {
-    for (const locale of ["zh-CN", "zh-TW", "en", "es", "it", "ja", "ko", "pt-BR"]) {
+    for (const locale of ["zh-CN", "zh-TW", "en", "es", "it", "ja", "ko", "pt-BR", "tr"]) {
       const source = readFileSync(new URL(`../../../i18n/locales/${locale}.ts`, import.meta.url), "utf8");
       expect(source, locale).toContain("syncWebDavWebDescription:");
     }
@@ -200,7 +212,7 @@ describe("settings search", () => {
   });
 
   it("defines the performance section title in every supported locale", () => {
-    for (const locale of ["zh-CN", "zh-TW", "en", "es", "it", "ja", "ko", "pt-BR"]) {
+    for (const locale of ["zh-CN", "zh-TW", "en", "es", "it", "ja", "ko", "pt-BR", "tr"]) {
       const source = readFileSync(new URL(`../../../i18n/locales/${locale}.ts`, import.meta.url), "utf8");
       expect(source, locale).toContain("performanceSection:");
     }
@@ -216,7 +228,7 @@ describe("settings search", () => {
       { titleKey: "settings.confirmDangerousSqlExecution", category: "editor", targetId: "editor" },
       { titleKey: "settings.continueOnErrorOnBatch", category: "editor", targetId: "editor" },
       { titleKey: "settings.dataGridQuickEntry", category: "data", targetId: "data" },
-      { titleKey: "settings.dataGridFilterView", category: "data", targetId: "data" },
+      { titleKey: "settings.dataGridFilterView", category: "data", targetId: "data-grid-filter-view" },
       { titleKey: "settings.colorizeDataGridCellTypes", category: "data", targetId: "data" },
       { titleKey: "transfer.dataTransfer", category: "appearance", targetId: "appearance" },
       { titleKey: "toolbar.driverManager", category: "appearance", targetId: "appearance" },
@@ -225,9 +237,11 @@ describe("settings search", () => {
       { titleKey: "settings.insertSpaceAfterCompletion", category: "editor", targetId: "editor" },
       { titleKey: "settings.completionTriggerMode", category: "editor", targetId: "editor" },
       { titleKey: "settings.autoAliasTables", category: "editor", targetId: "editor" },
-      { titleKey: "settings.clickTableNavigationTarget", category: "editor", targetId: "editor" },
+      { titleKey: "settings.clickTableNavigationTarget", category: "navigation", targetId: "navigation" },
+      { titleKey: "settings.prefillNewQueryWithSelect", category: "navigation", targetId: "navigation" },
       { titleKey: "settings.generateSqlIncludeDatabaseName", category: "editor", targetId: "editor" },
       { titleKey: "settings.formatSqlOnSqlFileSave", category: "editor", targetId: "editor" },
+      { titleKey: "settings.showTableDdlHoverPreview", category: "editor", targetId: "editor" },
       { titleKey: "settings.sqlFormatterKeywordCase", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterFunctionCase", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterDataTypeCase", category: "formatter", targetId: "formatter" },
@@ -238,6 +252,7 @@ describe("settings search", () => {
       { titleKey: "settings.sqlFormatterLogicalOperatorNewline", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterExpressionWidth", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterLinesBetweenQueries", category: "formatter", targetId: "formatter" },
+      { titleKey: "settings.sqlFormatterPreserveEmptyLines", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterDenseOperators", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterNewlineBeforeSemicolon", category: "formatter", targetId: "formatter" },
       { titleKey: "settings.sqlFormatterParamTypes", category: "formatter", targetId: "formatter" },

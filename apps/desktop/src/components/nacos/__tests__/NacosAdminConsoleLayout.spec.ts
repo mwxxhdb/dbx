@@ -9,6 +9,26 @@ describe("NacosAdminConsole config workbench layout", () => {
     expect(source).toContain('type AdminTab = "configs" | "services";');
   });
 
+  it("offers browser-console and Zen-mode actions in the workspace toolbar", () => {
+    expect(source).toContain("resolveNacosConsoleUrl");
+    expect(source).toContain("function openNacosConsole()");
+    expect(source).toContain('t("nacos.openConsole")');
+    expect(source).toContain("emit('toggleZenMode')");
+    expect(source).toContain('props.zenMode ? t("nacos.exitZenMode") : t("nacos.enterZenMode")');
+  });
+
+  it("keeps JSON metadata available while offering an on-demand table dialog", () => {
+    expect(source).toContain("function openInstanceMetadataTable(instance: NacosInstanceInfo)");
+    expect(source).toContain('t("nacos.viewMetadataTable")');
+    expect(source).toContain('class="nacos-instance-metadata-actions flex min-w-0 flex-wrap items-center gap-1"');
+    expect(source).toContain('<details class="min-w-0 text-muted-foreground">');
+    expect(source).not.toContain('<details class="min-w-0 flex-1 text-muted-foreground">');
+    expect(source).toContain('v-model:open="instanceMetadataTableOpen"');
+    expect(source).toContain('t("nacos.metadataKey")');
+    expect(source).toContain('t("nacos.metadataValue")');
+    expect(source).toContain("JSON.stringify(instance.metadata, null, 2)");
+  });
+
   it("keeps the editor as the final and primary workbench surface", () => {
     const contextBar = source.indexOf('class="nacos-config-context-bar');
     const inspector = source.indexOf('class="nacos-config-inspector');
@@ -134,9 +154,10 @@ describe("NacosAdminConsole config workbench layout", () => {
 
   it("keeps the configuration editor zoom behavior aligned with the SQL editor", () => {
     expect(source).toContain("createEditorZoomCommitScheduler");
+    expect(source).toContain("createEditorWheelZoomGestureGuard");
     expect(source).toContain("EditorView.domEventHandlers");
     expect(source).toContain("fontSizeFromWheelDelta(configEditorFontSize.value, event.deltaY)");
-    expect(source).toContain("if (!event.metaKey && !event.ctrlKey) return false;");
+    expect(source).toContain("if (!configEditorWheelZoomGestureGuard.accepts(event)) return false;");
     expect(source).toContain("configEditorZoomCommitScheduler.dispose()");
   });
 

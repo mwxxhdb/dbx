@@ -59,8 +59,10 @@ async fn live_postgres_concurrent_index_builds_valid_index() {
         triggers: Vec::new(),
         table_comment: None,
         original_table_comment: None,
+        mysql_engine: None,
         partitioned: false,
         is_gaussdb_m_mode: false,
+        table_collation: None,
     });
     assert!(result.warnings.is_empty(), "{:?}", result.warnings);
     assert_eq!(
@@ -189,8 +191,10 @@ async fn live_postgres_partitioned_parent_concurrent_request_rejected() {
         triggers: Vec::new(),
         table_comment: None,
         original_table_comment: None,
+        mysql_engine: None,
         partitioned: true,
         is_gaussdb_m_mode: false,
+        table_collation: None,
     });
     assert_eq!(
         result.warnings,
