@@ -316,6 +316,44 @@ pub async fn ai_cancel_stream(session_id: String) -> Result<bool, String> {
     Ok(dbx_core::ai::cancel_stream(&session_id).await)
 }
 
+/// Answers a pending plugin tool approval of the agent run `session_id`.
+/// Returns false when nothing was waiting (already answered or expired).
+#[tauri::command]
+pub async fn ai_resolve_tool_approval(session_id: String, approval_id: String, approved: bool) -> Result<bool, String> {
+    Ok(dbx_core::tool_approval::resolve_tool_approval(&session_id, &approval_id, approved))
+}
+
+/// Plugin ids whose MCP tools the built-in AI agent may call.
+/// Plugin ids whose MCP tools the built-in AI agent may call: every detected
+/// tool-capable plugin (a manifest `mcp` contribution with `ai_tools: false`
+/// opts out) minus the ids the user explicitly turned off in the Plugin
+/// Center.
+#[tauri::command]
+pub async fn get_ai_plugin_tool_plugins(state: State<'_, Arc<AppState>>) -> Result<Vec<String>, String> {
+    let mut ids =
+        dbx_core::ai::plugin_tools::effective_ai_tool_plugin_ids(state.inner()).await.into_iter().collect::<Vec<_>>();
+    ids.sort();
+    Ok(ids)
+}
+
+#[tauri::command]
+pub async fn set_ai_plugin_tool_plugin_enabled(
+    state: State<'_, Arc<AppState>>,
+    plugin_id: String,
+    enabled: bool,
+) -> Result<Vec<String>, String> {
+    state.storage.set_ai_plugin_tool_plugin_enabled(&plugin_id, enabled).await
+}
+
+/// Lists the tools the built-in AI would get from `plugin_id`.
+#[tauri::command]
+pub async fn preview_plugin_ai_tools(
+    state: State<'_, Arc<AppState>>,
+    plugin_id: String,
+) -> Result<dbx_core::plugin_tools::PluginToolPreview, String> {
+    dbx_core::plugin_tools::preview_plugin_tools(state.inner(), None, &plugin_id).await
+}
+
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn ai_agent_stream(
@@ -333,6 +371,7 @@ pub async fn ai_agent_stream(
     confirmed_connection_id: Option<String>,
     confirmed_database: Option<String>,
     confirmed_schema: Option<String>,
+    selected_databases: Option<Vec<String>>,
 ) -> Result<String, String> {
     let mut request = resolve_cli_provider_request(request);
     merge_global_max_retries(
@@ -387,11 +426,15 @@ pub async fn ai_agent_stream(
         state: state.inner().clone(),
         connection_id,
         database,
+        selected_databases: selected_databases.unwrap_or_default(),
         schema,
         db_type: parsed_db_type,
         cli_mcp_server_command,
         sql_permissions,
         max_agent_turns,
+        prompt_cache_key: request.prompt_cache_key.clone(),
+        session_id: Some(session_id.clone()),
+        host_runtime: Some(tokio::runtime::Handle::current()),
     };
     let is_agent_mode = mode.as_deref() == Some("agent");
 
@@ -668,6 +711,7 @@ mod tests {
             custom_headers: Default::default(),
             proxy_enabled: false,
             proxy_url: String::new(),
+            skip_tls_verify: false,
             enable_thinking: false,
             reasoning_level: AiReasoningLevel::Default,
             max_output_tokens: None,
@@ -798,7 +842,7 @@ mod tests {
     async fn tauri_entry_respects_global_max_retries_zero() {
         let dir = std::env::temp_dir().join(format!("dbx-tauri-mr-{}", uuid::Uuid::new_v4()));
         let _ = std::fs::create_dir_all(&dir);
-        let storage = dbx_core::storage::Storage::open(&dir.join("storage.db")).await.unwrap();
+        let storage = dbx_core::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap();
         storage.save_max_retries(0).await.unwrap();
         assert_eq!(storage.load_max_retries().await.unwrap(), 0);
 

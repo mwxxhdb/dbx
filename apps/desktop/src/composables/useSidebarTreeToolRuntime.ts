@@ -4,6 +4,7 @@ import type { useQueryStore } from "@/stores/queryStore";
 import type { useSettingsStore } from "@/stores/settingsStore";
 import type { TreeNode } from "@/types/database";
 import { allDatabasesExportSourceForNode, databaseExportSourceForNode, sidebarSameSchemaStructureTargets } from "@/lib/sidebar/sidebarExportRuntime";
+import { schemaDiffRoutineKey } from "@/lib/schema/schemaDiffRoutine";
 
 interface SidebarTreeToolRuntimeOptions {
   activeNode: ShallowRef<TreeNode>;
@@ -26,13 +27,24 @@ export function useSidebarTreeToolRuntime(options: SidebarTreeToolRuntimeOptions
     };
   }
 
-  function openSchemaDiff() {
+  function openSchemaDiff(options?: { selectedRoutines?: string[]; preferredResultTab?: "tables" | "routines" }) {
     if (!activeNode.value.connectionId) return;
     connectionStore.schemaDiffSource = {
       connectionId: activeNode.value.connectionId,
       database: activeNode.value.database ?? "",
       schema: activeNode.value.schema,
+      selectedRoutines: options?.selectedRoutines,
+      preferredResultTab: options?.preferredResultTab,
     };
+  }
+
+  function openSchemaDiffForRoutine() {
+    const node = activeNode.value;
+    if (!node.connectionId || (node.type !== "procedure" && node.type !== "function")) return;
+    openSchemaDiff({
+      selectedRoutines: [schemaDiffRoutineKey(node.objectName || node.label, node.signature ?? "")],
+      preferredResultTab: "routines",
+    });
   }
 
   function openDataCompare() {
@@ -50,6 +62,7 @@ export function useSidebarTreeToolRuntime(options: SidebarTreeToolRuntimeOptions
     connectionStore.sqlFileSource = {
       connectionId: activeNode.value.connectionId,
       database: activeNode.value.database ?? "",
+      ...(activeNode.value.schema ? { schema: activeNode.value.schema } : {}),
     };
   }
 
@@ -80,6 +93,28 @@ export function useSidebarTreeToolRuntime(options: SidebarTreeToolRuntimeOptions
       // A database node has no schema, and an absent schema is what tells the
       // collector to document every schema in the database.
       schema: node.schema,
+    };
+  }
+
+  function openDataDictionary() {
+    const node = activeNode.value;
+    if (!node.connectionId || !node.database) return;
+    if (node.type === "table" || node.type === "view" || node.type === "materialized_view") {
+      const targets = selectedSameSchemaStructureTargets().filter((target) => target.type === "table" || target.type === "view" || target.type === "materialized_view");
+      const tableNames = targets.length > 1 ? targets.map((target) => target.label) : [node.label];
+      connectionStore.dataDictionarySource = {
+        connectionId: node.connectionId,
+        database: node.database,
+        schema: node.schema,
+        tableNames,
+      };
+      return;
+    }
+    connectionStore.dataDictionarySource = {
+      connectionId: node.connectionId,
+      database: node.database,
+      // A database node has no schema, so the collector documents every schema.
+      schema: node.type === "schema" ? node.schema : undefined,
     };
   }
 
@@ -127,6 +162,22 @@ export function useSidebarTreeToolRuntime(options: SidebarTreeToolRuntimeOptions
     };
   }
 
+  function openMongoImport() {
+    const node = activeNode.value;
+    if (!node.connectionId || !node.database || node.type !== "mongo-collection") return;
+    connectionStore.mongoImportSource = {
+      connectionId: node.connectionId,
+      database: node.database,
+      collection: node.label,
+    };
+  }
+
+  function openMongoDatabaseDump(mode: "dump" | "restore") {
+    const node = activeNode.value;
+    if (node.type !== "mongo-db" || !node.connectionId || !node.database) return;
+    connectionStore.mongoDatabaseDumpSource = { connectionId: node.connectionId, database: node.database, mode };
+  }
+
   function openStructureEditor() {
     const node = activeNode.value;
     if (!node.connectionId || !node.database) return;
@@ -165,11 +216,15 @@ export function useSidebarTreeToolRuntime(options: SidebarTreeToolRuntimeOptions
     openDataCompare,
     openDatabaseExport,
     openDatabaseSearch,
+    openDataDictionary,
     openDiagram,
     openDocs,
     openFieldLineage,
+    openMongoImport,
+    openMongoDatabaseDump,
     openScheduledBackups,
     openSchemaDiff,
+    openSchemaDiffForRoutine,
     openSqlFileExecution,
     openStructureEditor,
     openTableImport,

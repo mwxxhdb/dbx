@@ -1,11 +1,11 @@
 import { createApp } from "vue";
 import { createPinia } from "pinia";
-import VueVirtualScroller from "vue-virtual-scroller";
-import "vue-virtual-scroller/dist/vue-virtual-scroller.css";
 import "./styles/globals.css";
 import { installDebugLogCapture } from "@/lib/backend/debugLog";
-import { clearStartupPreloadRetry, retryStartupAfterPreloadFailure } from "@/lib/startup/startupPreloadRecovery";
-import { applyLegacyWebViewClass } from "@/lib/ui/legacyWebView";
+import { retryStartupAfterPreloadFailure } from "@/lib/startup/startupPreloadRecovery";
+import { markStartupPhase } from "@/lib/startup/startupTiming";
+import { applyLegacyWebViewClass, isBlockingCompatFailure } from "@/lib/ui/legacyWebView";
+import { hydrateAppAppearance } from "@/lib/app/appAppearance";
 
 function startupErrorMessage(error: unknown): string {
   if (error instanceof Error) {
@@ -76,19 +76,31 @@ function installGlobalInputAttrs() {
 }
 
 async function bootstrap() {
+  markStartupPhase("bootstrap");
   console.log("[STARTUP] frontend bootstrap begin");
-  const [{ default: i18n, loadSavedLocale }, { default: App }] = await Promise.all([import("./i18n"), import("./App.vue")]);
-  console.log("[STARTUP] frontend modules loaded");
-  await loadSavedLocale();
-  console.log("[STARTUP] locale ready");
 
-  const app = createApp(App);
+  // The inline engine probe in index.html has already painted an upgrade notice when this
+  // engine cannot style the shell; mounting over it would only replace a readable message
+  // with an unstyled UI. The notice's own button reloads once the user opts to continue.
+  if (isBlockingCompatFailure()) {
+    markStartupPhase("compat-blocked");
+    console.warn("[STARTUP] blocked by engine compatibility notice");
+    window.dispatchEvent(new Event("dbx:startup-ready"));
+    return;
+  }
+  // Tauri WebViews may not retain localStorage across macOS restarts. Load the
+  // durable appearance record before importing i18n and the theme composable;
+  // those modules synchronously read the compatibility keys during evaluation.
+  await hydrateAppAppearance();
+  const [{ default: i18n, loadSavedLocale }, { default: App }] = await Promise.all([import("./i18n"), import("./StartupGate.vue")]);
+  console.log("[STARTUP] frontend modules loaded");
+  const localeReady = loadSavedLocale();
+  const app = createApp(App, { localeReady });
   app.use(createPinia());
   app.use(i18n);
-  app.use(VueVirtualScroller);
   app.mount("#root");
-  clearStartupPreloadRetry();
-  window.dispatchEvent(new Event("dbx:startup-ready"));
+  markStartupPhase("gate-mounted");
+  void localeReady.then(() => window.dispatchEvent(new Event("dbx:startup-ready"))).catch(() => {});
   console.log("[STARTUP] vue mounted");
 
   installGlobalInputAttrs();

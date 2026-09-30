@@ -59,6 +59,8 @@ pub async fn export_database_sql(
                     status: ExportStatus::Error,
                     error: Some(e),
                     preparing: false,
+                    error_count: 0,
+                    error_summary: None,
                 },
             );
         }
@@ -79,6 +81,17 @@ pub async fn cancel_database_export(export_id: String) -> Result<(), String> {
 pub async fn clear_database_export_cancellation(export_id: String) -> Result<(), String> {
     dbx_core::database_export::clear_export_cancelled(&export_id).await;
     Ok(())
+}
+
+/// Returns whether a scheduled backup destination must be explicitly selected
+/// again before DBX can replace a legacy macOS filesystem identity.
+#[tauri::command]
+pub async fn database_export_destination_needs_confirmation(
+    state: State<'_, Arc<AppState>>,
+    directory: String,
+) -> Result<bool, String> {
+    dbx_core::database_export::export_destination_identity_needs_confirmation(&state, std::path::Path::new(&directory))
+        .await
 }
 
 /// Records a scheduled backup destination's filesystem identity as soon as

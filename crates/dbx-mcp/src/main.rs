@@ -8,6 +8,14 @@ use rmcp::ServiceExt;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args_os().nth(1).is_some_and(|argument| argument == "--version") {
+        println!("dbx-mcp {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+    // Diagnostics (plugin-tool discovery, bridge fallbacks) go to stderr,
+    // which is safe under the stdio transport. RUST_LOG controls the level;
+    // warnings are on by default so silent degradation stays visible.
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     let runtime = RuntimeConfig::from_environment_and_args()?;
     let backend: Arc<dyn DbxBackend> = if let Ok(base_url) = std::env::var("DBX_WEB_URL") {
         Arc::new(

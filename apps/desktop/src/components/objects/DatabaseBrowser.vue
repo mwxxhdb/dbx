@@ -1,15 +1,25 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref, watch } from "vue";
-import { ArrowDown, ArrowUp, Database, GripVertical, LayoutGrid, List, Loader2, RefreshCw, Search, X } from "@lucide/vue";
+import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { ArrowDown, ArrowUp, Check, Copy, Database, GripVertical, LayoutGrid, List, Loader2, RefreshCw, Search, TerminalSquare, X } from "@lucide/vue";
 import { useI18n } from "vue-i18n";
 import { Button } from "@/components/ui/button";
+import { DropdownMenuItem, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubContent, DropdownMenuSubTrigger } from "@/components/ui/dropdown-menu";
 import { Input } from "@/components/ui/input";
+import ToolbarOverflowMenu from "@/components/ui/ToolbarOverflowMenu.vue";
+import CustomContextMenu, { type ContextMenuItem } from "@/components/ui/CustomContextMenu.vue";
+import SidebarTreeRuntimeHost from "@/components/sidebar/SidebarTreeRuntimeHost.vue";
+import SidebarTreeItemDialogs from "@/components/sidebar/SidebarTreeItemDialogs.vue";
+import { useToolbarOverflow } from "@/composables/useToolbarOverflow";
 import * as api from "@/lib/backend/api";
 import { filterDatabaseNamesForConnection } from "@/lib/database/visibleDatabases";
 import { formatObjectBrowserBytes, formatObjectBrowserTimestamp } from "@/lib/table/objectBrowserRows";
+import { requestObjectBrowserSearchFocus } from "@/lib/tabs/objectBrowserSearchFocus";
+import { useTabUiState } from "@/lib/tabs/tabUiState";
 import { useQueryStore } from "@/stores/queryStore";
+import { useConnectionStore } from "@/stores/connectionStore";
 import { useSettingsStore } from "@/stores/settingsStore";
-import type { ConnectionConfig } from "@/types/database";
+import type { ConnectionConfig, TreeNode } from "@/types/database";
+import { copyToClipboard } from "@/lib/common/clipboard";
 
 type DatabaseRow = {
   name: string;
@@ -25,21 +35,7 @@ type DatabaseBrowserColumnKey = "name" | "sizeBytes" | "createdAt" | "updatedAt"
 type DatabaseBrowserSortKey = DatabaseBrowserColumnKey;
 type SortDirection = "asc" | "desc";
 
-const props = defineProps<{
-  connection: ConnectionConfig;
-}>();
-
-const { t } = useI18n();
-const queryStore = useQueryStore();
-const settingsStore = useSettingsStore();
-const searchInput = ref<InstanceType<typeof Input>>();
-const search = ref("");
-const rows = ref<DatabaseRow[]>([]);
-const loading = ref(false);
-const error = ref("");
-const sortKey = ref<DatabaseBrowserSortKey>("name");
-const sortDirection = ref<SortDirection>("asc");
-const columnWidths = ref<Record<DatabaseBrowserColumnKey, number>>({
+const DEFAULT_COLUMN_WIDTHS: Record<DatabaseBrowserColumnKey, number> = {
   name: 260,
   sizeBytes: 100,
   createdAt: 150,
@@ -47,8 +43,47 @@ const columnWidths = ref<Record<DatabaseBrowserColumnKey, number>>({
   defaultCharset: 130,
   defaultCollation: 170,
   comment: 260,
-});
+};
+const DATABASE_BROWSER_COLUMN_KEYS = Object.keys(DEFAULT_COLUMN_WIDTHS) as DatabaseBrowserColumnKey[];
+
+interface DatabaseBrowserTabUiState {
+  search?: string;
+  sortKey?: DatabaseBrowserSortKey;
+  sortDirection?: SortDirection;
+  columnWidths?: Partial<Record<DatabaseBrowserColumnKey, number>>;
+}
+
+const props = defineProps<{
+  connection: ConnectionConfig;
+}>();
+
+const { initialState: restoredUiState, track: trackUiState } = useTabUiState<DatabaseBrowserTabUiState>({}, "DatabaseBrowser");
+const { t } = useI18n();
+const queryStore = useQueryStore();
+const connectionStore = useConnectionStore();
+const settingsStore = useSettingsStore();
+const searchInput = ref<InstanceType<typeof Input>>();
+const search = ref(restoredUiState.search ?? "");
+const rows = ref<DatabaseRow[]>([]);
+const loading = ref(false);
+const error = ref("");
+const sortKey = ref<DatabaseBrowserSortKey>(DATABASE_BROWSER_COLUMN_KEYS.includes(restoredUiState.sortKey as DatabaseBrowserColumnKey) ? restoredUiState.sortKey! : "name");
+const sortDirection = ref<SortDirection>(restoredUiState.sortDirection === "desc" ? "desc" : "asc");
+const columnWidths = ref<Record<DatabaseBrowserColumnKey, number>>(
+  Object.fromEntries(
+    DATABASE_BROWSER_COLUMN_KEYS.map((key) => {
+      const restored = restoredUiState.columnWidths?.[key];
+      return [key, typeof restored === "number" && Number.isFinite(restored) ? Math.max(key === "name" || key === "comment" ? 120 : 72, restored) : DEFAULT_COLUMN_WIDTHS[key]];
+    }),
+  ) as Record<DatabaseBrowserColumnKey, number>,
+);
 let stopColumnResize: (() => void) | null = null;
+let refreshGeneration = 0;
+const sidebarRuntimeHost = ref<InstanceType<typeof SidebarTreeRuntimeHost> | null>(null);
+const sidebarRuntimeNode: TreeNode = { id: "__database-browser-runtime__", label: "", type: "connection-group" };
+const sidebarDialogController = ref<Record<string, any> | null>(null);
+
+trackUiState(() => ({ search: search.value, sortKey: sortKey.value, sortDirection: sortDirection.value, columnWidths: columnWidths.value }));
 
 const hasSize = computed(() => rows.value.some((row) => row.sizeBytes != null));
 const hasCreatedAt = computed(() => rows.value.some((row) => !!row.createdAt?.trim()));
@@ -57,6 +92,14 @@ const hasComment = computed(() => rows.value.some((row) => !!row.comment?.trim()
 const hasDefaultCharset = computed(() => rows.value.some((row) => !!row.defaultCharset?.trim()));
 const hasDefaultCollation = computed(() => rows.value.some((row) => !!row.defaultCollation?.trim()));
 const isListView = computed(() => settingsStore.editorSettings.objectBrowserViewMode !== "grid");
+// Measured condensation for the header row: tier 1 moves the sort/view
+// controls into the overflow menu, tier 2 drops the connection chip (the tab
+// title already carries it). See useToolbarOverflow for the tier contract.
+const toolbarRef = ref<HTMLElement | null>(null);
+const { tier: toolbarTier } = useToolbarOverflow(toolbarRef, [() => props.connection.id]);
+const showToolbarOverflow = computed(() => toolbarTier.value >= 1);
+const showConnectionChip = computed(() => toolbarTier.value < 2);
+const showInlineSortAndView = computed(() => toolbarTier.value < 1);
 
 const columns = computed<DatabaseBrowserColumnKey[]>(() => {
   const next: DatabaseBrowserColumnKey[] = ["name"];
@@ -80,7 +123,54 @@ const visibleRows = computed(() => {
 });
 
 function openDatabase(database: string) {
-  queryStore.openObjectBrowser(props.connection.id, database);
+  const tabId = queryStore.openObjectBrowser(props.connection.id, database);
+  void nextTick(() => requestObjectBrowserSearchFocus(tabId));
+}
+
+function databaseContextMenuItems(row: DatabaseRow): ContextMenuItem[] {
+  const node: TreeNode = { id: `${props.connection.id}:${row.name}`, label: row.name, type: "database", connectionId: props.connection.id, database: row.name };
+  const runtimeItems = sidebarRuntimeHost.value?.buildContextMenu(node);
+  if (runtimeItems?.length) return removeUnsupportedDatabaseItems(runtimeItems);
+  const isDefault = props.connection.database === row.name;
+  return [
+    { label: t("contextMenu.viewData"), action: () => openDatabase(row.name), icon: Database },
+    {
+      label: t("contextMenu.viewDdl"),
+      action: () => {
+        const dbType = props.connection.db_type;
+        const sql = dbType === "mysql" ? `SHOW CREATE DATABASE \`${row.name.replaceAll("`", "``")}\`;` : `-- ${row.name}\n-- Database DDL is not available for this driver.`;
+        queryStore.createTab(props.connection.id, row.name, `${row.name} - ${t("contextMenu.viewDdl")}`, "query", undefined, sql, undefined, { forceNew: true });
+      },
+      icon: Copy,
+    },
+    { label: t("contextMenu.newQuery"), action: () => queryStore.createTab(props.connection.id, row.name, `${row.name} - ${t("contextMenu.newQuery")}`, "query", undefined, undefined, undefined, { forceNew: true }), icon: TerminalSquare },
+    { label: t("contextMenu.copyName"), action: () => copyToClipboard(row.name), icon: Copy },
+    { label: "", separator: true },
+    {
+      label: isDefault ? t("contextMenu.clearDefaultDatabase") : t("contextMenu.setDefaultDatabase"),
+      action: () => (isDefault ? connectionStore.clearDefaultDatabase(props.connection.id) : connectionStore.setDefaultDatabase(props.connection.id, row.name)),
+      icon: Database,
+    },
+    { label: "", separator: true },
+    { label: t("contextMenu.refreshTab"), action: () => refresh(), icon: RefreshCw },
+  ];
+}
+
+function removeUnsupportedDatabaseItems(items: ContextMenuItem[]): ContextMenuItem[] {
+  // The sidebar's AI action needs the sidebar-level AI panel owner, and the
+  // visible-schemas item emits "open-visible-schemas" which only the sidebar
+  // tree handles. The database browser wires neither, so do not expose menu
+  // items that would otherwise be a silent no-op here.
+  return items.flatMap((item) => {
+    if (item.label.startsWith(t("contextMenu.addToAi")) || item.label === t("visibleSchemas.title") || item.variant === "destructive") return [];
+    if (!item.children) return [item];
+    const children = removeUnsupportedDatabaseItems(item.children);
+    return children.length ? [{ ...item, children }] : [];
+  });
+}
+
+function openDatabaseFromSidebar(node: TreeNode) {
+  if (node.database) openDatabase(node.database);
 }
 
 function columnLabel(key: DatabaseBrowserColumnKey): string {
@@ -166,19 +256,11 @@ function resetColumnWidth(key: DatabaseBrowserColumnKey, width: number, event: M
 }
 
 async function refresh(): Promise<boolean> {
+  const generation = ++refreshGeneration;
   loading.value = true;
   error.value = "";
   try {
-    let databases;
-    try {
-      databases = await api.listDatabaseMetadata(props.connection.id);
-    } catch (metadataError) {
-      try {
-        databases = await api.listDatabases(props.connection.id);
-      } catch {
-        throw metadataError;
-      }
-    }
+    const databases = await api.listDatabases(props.connection.id);
     const visibleNames = new Set(
       filterDatabaseNamesForConnection(
         databases.map((database) => database.name),
@@ -196,11 +278,38 @@ async function refresh(): Promise<boolean> {
         defaultCharset: database.default_charset ?? null,
         defaultCollation: database.default_collation ?? null,
       }));
+    loading.value = false;
+
+    // Name enumeration is cheap and should render immediately. Enrich the
+    // rows separately because MySQL metadata calculates sizes by aggregating
+    // information_schema.TABLES, which can be expensive for large servers.
+    try {
+      const metadata = await api.listDatabaseMetadata(props.connection.id);
+      if (generation !== refreshGeneration) return true;
+      const metadataByName = new Map(metadata.map((database) => [database.name, database]));
+      rows.value = rows.value.map((row) => {
+        const database = metadataByName.get(row.name);
+        return database
+          ? {
+              ...row,
+              sizeBytes: database.size_bytes ?? null,
+              createdAt: database.created_at ?? null,
+              updatedAt: database.updated_at ?? null,
+              comment: database.comment ?? null,
+              defaultCharset: database.default_charset ?? null,
+              defaultCollation: database.default_collation ?? null,
+            }
+          : row;
+      });
+    } catch {
+      // Names remain useful when optional metadata is unavailable or slow.
+    }
   } catch (cause: any) {
+    if (generation !== refreshGeneration) return true;
     rows.value = [];
     error.value = cause?.message || String(cause);
   } finally {
-    loading.value = false;
+    if (generation === refreshGeneration) loading.value = false;
   }
   return true;
 }
@@ -222,10 +331,12 @@ watch(sortKeyOptions, (options) => {
   }
 });
 
+let initialConnectionWatch = true;
 watch(
   () => props.connection.id,
   () => {
-    search.value = "";
+    if (initialConnectionWatch) initialConnectionWatch = false;
+    else search.value = "";
     void refresh();
   },
   { immediate: true },
@@ -238,18 +349,18 @@ defineExpose({ focusSearch, refresh });
 
 <template>
   <section class="flex h-full min-h-0 min-w-0 flex-col bg-background">
-    <div class="flex h-10 shrink-0 items-center gap-2 border-b px-3">
-      <span class="inline-flex max-w-[14rem] min-w-0 items-center truncate rounded border border-border bg-muted/50 px-2 py-0.5 text-xs font-medium" :title="connection.name">
+    <div ref="toolbarRef" class="flex h-10 shrink-0 items-center gap-2 overflow-hidden border-b px-3">
+      <span v-if="showConnectionChip" class="inline-flex max-w-[14rem] min-w-12 items-center truncate rounded border border-border bg-muted/50 px-2 py-0.5 text-xs font-medium" :title="connection.name">
         {{ connection.name }}
       </span>
-      <div class="relative min-w-0 flex-1">
+      <div class="relative min-w-24 flex-1">
         <Search class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input ref="searchInput" v-model="search" class="h-7 pl-8 pr-6 text-xs" :placeholder="t('databaseBrowser.search')" />
         <button v-if="search" type="button" class="absolute right-1.5 top-1/2 flex h-4 w-4 -translate-y-1/2 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-foreground" :aria-label="t('common.clear')" @click="clearDatabaseSearch">
           <X class="h-3 w-3" />
         </button>
       </div>
-      <div class="flex h-7 shrink-0 items-center rounded border bg-muted/20 p-0.5">
+      <div v-if="showInlineSortAndView" class="flex h-7 shrink-0 items-center rounded border bg-muted/20 p-0.5">
         <select
           class="h-6 cursor-pointer appearance-none rounded-sm bg-transparent px-1.5 text-xs text-muted-foreground outline-none hover:text-foreground focus:text-foreground"
           :value="sortKey"
@@ -263,7 +374,7 @@ defineExpose({ focusSearch, refresh });
           <ArrowDown v-else class="h-3 w-3" />
         </button>
       </div>
-      <div class="flex h-7 shrink-0 items-center rounded border bg-muted/20 p-0.5">
+      <div v-if="showInlineSortAndView" class="flex h-7 shrink-0 items-center rounded border bg-muted/20 p-0.5">
         <button type="button" class="flex h-6 w-6 items-center justify-center rounded-sm text-muted-foreground transition-colors hover:text-foreground" :class="{ 'bg-background text-foreground shadow-sm': isListView }" :title="t('objects.viewList')" @click="setViewMode('list')">
           <List class="h-3.5 w-3.5" />
         </button>
@@ -274,6 +385,34 @@ defineExpose({ focusSearch, refresh });
       <Button variant="ghost" size="icon" class="h-7 w-7" :title="t('contextMenu.refreshTab')" :disabled="loading" @click="refresh">
         <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" />
       </Button>
+      <ToolbarOverflowMenu v-if="showToolbarOverflow" :label="t('toolbar.moreActions')" button-class="h-7 w-7">
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <ArrowDown class="h-3.5 w-3.5" />
+            {{ t("objects.sortBy") }}
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent>
+            <DropdownMenuItem v-for="key in sortKeyOptions" :key="key" @select="toggleSort(key)">
+              <Check v-if="sortKey === key" class="h-3.5 w-3.5" />
+              {{ columnLabel(key) }}
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        <DropdownMenuItem @select="sortDirection = sortDirection === 'asc' ? 'desc' : 'asc'">
+          <ArrowUp v-if="sortDirection === 'asc'" class="h-3.5 w-3.5" />
+          <ArrowDown v-else class="h-3.5 w-3.5" />
+          {{ sortDirection === "asc" ? t("objects.sortDesc") : t("objects.sortAsc") }}
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem @select="setViewMode('list')">
+          <List class="h-3.5 w-3.5" />
+          {{ t("objects.viewList") }}
+        </DropdownMenuItem>
+        <DropdownMenuItem @select="setViewMode('grid')">
+          <LayoutGrid class="h-3.5 w-3.5" />
+          {{ t("objects.viewGrid") }}
+        </DropdownMenuItem>
+      </ToolbarOverflowMenu>
     </div>
 
     <div v-if="loading && rows.length === 0" class="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground"><Loader2 class="h-4 w-4 animate-spin" />{{ t("objects.loading") }}</div>
@@ -306,16 +445,20 @@ defineExpose({ focusSearch, refresh });
             @dblclick="openDatabase(row.name)"
             @keydown.enter.prevent="openDatabase(row.name)"
           >
-            <div
-              v-for="key in columns"
-              :key="key"
-              class="min-w-0 truncate text-xs text-muted-foreground"
-              :class="{ 'flex items-center gap-2 text-[13px] font-medium text-foreground': key === 'name', 'tabular-nums': key === 'sizeBytes' || key === 'createdAt' || key === 'updatedAt' }"
-              :title="displayValue(row, key)"
-            >
-              <Database v-if="key === 'name'" class="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
-              {{ displayValue(row, key) || "-" }}
-            </div>
+            <CustomContextMenu :items="() => databaseContextMenuItems(row)" v-slot="{ onContextMenu }">
+              <div class="contents" @contextmenu="onContextMenu">
+                <div
+                  v-for="key in columns"
+                  :key="key"
+                  class="min-w-0 truncate text-xs text-muted-foreground"
+                  :class="{ 'flex items-center gap-2 text-[13px] font-medium text-foreground': key === 'name', 'tabular-nums': key === 'sizeBytes' || key === 'createdAt' || key === 'updatedAt' }"
+                  :title="displayValue(row, key)"
+                >
+                  <Database v-if="key === 'name'" class="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+                  {{ displayValue(row, key) || "-" }}
+                </div>
+              </div>
+            </CustomContextMenu>
           </div>
         </div>
       </div>
@@ -328,15 +471,21 @@ defineExpose({ focusSearch, refresh });
           @dblclick="openDatabase(row.name)"
           @keydown.enter.prevent="openDatabase(row.name)"
         >
-          <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 shadow-sm"><Database class="h-6 w-6 text-emerald-600 dark:text-emerald-400" /></div>
-          <span class="w-full truncate text-sm font-medium text-foreground" :title="row.name">{{ row.name }}</span>
-          <div class="flex min-h-[15px] items-center gap-1 text-[10px] leading-[15px] text-muted-foreground">
-            <span v-if="row.sizeBytes != null">{{ formatObjectBrowserBytes(row.sizeBytes) }}</span
-            ><span v-if="row.createdAt && row.sizeBytes != null">·</span><span v-if="row.createdAt">{{ formatObjectBrowserTimestamp(row.createdAt) }}</span>
-          </div>
-          <div v-if="hasComment" class="w-full truncate text-[10px] leading-[15px] text-muted-foreground/60" :title="row.comment || ''">{{ row.comment || "\u00A0" }}</div>
+          <CustomContextMenu :items="() => databaseContextMenuItems(row)" v-slot="{ onContextMenu }">
+            <div class="contents" @contextmenu="onContextMenu">
+              <div class="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 shadow-sm"><Database class="h-6 w-6 text-emerald-600 dark:text-emerald-400" /></div>
+              <span class="w-full truncate text-sm font-medium text-foreground" :title="row.name">{{ row.name }}</span>
+              <div class="flex min-h-[15px] items-center gap-1 text-[10px] leading-[15px] text-muted-foreground">
+                <span v-if="row.sizeBytes != null">{{ formatObjectBrowserBytes(row.sizeBytes) }}</span
+                ><span v-if="row.createdAt && row.sizeBytes != null">·</span><span v-if="row.createdAt">{{ formatObjectBrowserTimestamp(row.createdAt) }}</span>
+              </div>
+              <div v-if="hasComment" class="w-full truncate text-[10px] leading-[15px] text-muted-foreground/60" :title="row.comment || ''">{{ row.comment || "\u00A0" }}</div>
+            </div>
+          </CustomContextMenu>
         </div>
       </div>
     </div>
+    <SidebarTreeRuntimeHost ref="sidebarRuntimeHost" :node="sidebarRuntimeNode" :depth="0" @open-data="openDatabaseFromSidebar" @open-ddl="openDatabaseFromSidebar" @open-dialog-controller="sidebarDialogController = $event" />
+    <SidebarTreeItemDialogs v-if="sidebarDialogController" :controller="sidebarDialogController" @closed="sidebarDialogController = null" />
   </section>
 </template>

@@ -1,4 +1,4 @@
-import type { Text } from "@codemirror/state";
+import { RangeSet, RangeValue, type ChangeSet, type Text } from "@codemirror/state";
 import type { DatabaseType } from "@/types/database";
 import { readSqlBracedParameterAt, type SqlParameterOptions } from "@/lib/sql/sqlParameters";
 import { executableStatementRanges, type SqlTextRange } from "@/lib/sql/sqlStatementRanges";
@@ -14,6 +14,52 @@ export interface ExecutableStatementRangeCache {
   ranges: SqlTextRange[];
 }
 
+/**
+ * Membership-only view of the statement-start positions a run-statement gutter
+ * needs (`byStart` keys plus `byExecutableLineStart` keys). Kept separate from
+ * the full cache so it can be cheaply shifted through a ChangeSet on every
+ * keystroke and fully rebuilt only after typing pauses, instead of re-parsing
+ * the whole document synchronously per keystroke.
+ */
+export interface StatementGutterStartIndex {
+  starts: RangeSet<StatementGutterStartMarker>;
+  executableLineStarts: RangeSet<StatementGutterStartMarker>;
+}
+
+class StatementGutterStartMarker extends RangeValue {
+  startSide = 1;
+  endSide = 1;
+}
+
+const statementGutterStartMarker = new StatementGutterStartMarker();
+
+function statementGutterStartRangeSet(positions: Iterable<number>): RangeSet<StatementGutterStartMarker> {
+  return RangeSet.of(
+    Array.from(new Set(positions), (position) => statementGutterStartMarker.range(position)),
+    true,
+  );
+}
+
+export function statementGutterStartIndexForCache(cache: ExecutableStatementRangeCache): StatementGutterStartIndex {
+  return {
+    starts: statementGutterStartRangeSet(cache.byStart.keys()),
+    executableLineStarts: statementGutterStartRangeSet(cache.byExecutableLineStart.keys()),
+  };
+}
+
+export function mapStatementGutterStartIndex(index: StatementGutterStartIndex, changes: ChangeSet): StatementGutterStartIndex {
+  return { starts: index.starts.map(changes), executableLineStarts: index.executableLineStarts.map(changes) };
+}
+
+export function statementGutterStartIndexHasStartAt(index: StatementGutterStartIndex, lineFrom: number): boolean {
+  return rangeSetHasPointAt(index.starts, lineFrom) || rangeSetHasPointAt(index.executableLineStarts, lineFrom);
+}
+
+function rangeSetHasPointAt(ranges: RangeSet<StatementGutterStartMarker>, position: number): boolean {
+  const cursor = ranges.iter(position);
+  return cursor.value !== null && cursor.from === position;
+}
+
 export type ExecutableStatementRangeParser = (sql: string, databaseType?: DatabaseType, parameterOptions?: SqlParameterOptions) => SqlTextRange[];
 
 export function executableStatementRangeCacheForDoc(
@@ -25,7 +71,7 @@ export function executableStatementRangeCacheForDoc(
 ): ExecutableStatementRangeCache {
   const parameterOptions = typeof parameterOptionsOrParse === "function" ? undefined : parameterOptionsOrParse;
   const parse = typeof parameterOptionsOrParse === "function" ? parameterOptionsOrParse : customParse;
-  const parameterSyntaxKey = parameterOptions?.enabledSyntaxes ? parameterOptions.enabledSyntaxes.join(",") : "*";
+  const parameterSyntaxKey = `${parameterOptions?.enabledSyntaxes ? parameterOptions.enabledSyntaxes.join(",") : "*"}|compat=${parameterOptions?.compatibilityMode?.trim().toUpperCase() ?? ""}`;
   if (cache?.doc === doc && cache.databaseType === databaseType && cache.parameterSyntaxKey === parameterSyntaxKey) return cache;
 
   const byStart = new Map<number, SqlTextRange>();

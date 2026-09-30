@@ -1,4 +1,24 @@
-export type AiProvider = "claude" | "openai" | "gemini" | "deepseek" | "kimi" | "qwen" | "minimax" | "ollama" | "anthropic-compatible" | "openai-compatible" | "claude-code-cli" | "pi-agent-cli" | "codex-cli" | "opencode-cli" | "cursor-cli" | "grok-cli" | "codebuddy-cli" | "qoder-cli" | "custom";
+export type AiProvider =
+  | "claude"
+  | "openai"
+  | "gemini"
+  | "deepseek"
+  | "kimi"
+  | "qwen"
+  | "zhipu"
+  | "minimax"
+  | "ollama"
+  | "anthropic-compatible"
+  | "openai-compatible"
+  | "claude-code-cli"
+  | "pi-agent-cli"
+  | "codex-cli"
+  | "opencode-cli"
+  | "cursor-cli"
+  | "grok-cli"
+  | "codebuddy-cli"
+  | "qoder-cli"
+  | "custom";
 export type AiApiStyle = "completions" | "responses" | "anthropic-messages";
 export type AiAuthMethod = "api-key" | "bearer";
 export type AiEffortLevel = "low" | "medium" | "high" | "xhigh" | "max";
@@ -40,6 +60,8 @@ export interface AiConfig {
   customHeaders?: Record<string, string>;
   proxyEnabled?: boolean;
   proxyUrl?: string;
+  /** Disable TLS certificate verification for the AI endpoint (self-signed/private CA only). */
+  skipTlsVerify?: boolean;
   enableThinking?: boolean;
   reasoningLevel?: AiReasoningLevel;
   /** Optional per-configuration output budget sent as max_tokens/max_output_tokens. */
@@ -94,6 +116,10 @@ export interface AiChatSelectionState {
   active?: AiActiveModelSelection;
   effortPreferences: AiModelEffortPreference[];
   defaultMode?: AiAssistantMode;
+  /** Whether new AI conversations start with the action picker on `auto` (#9118). */
+  defaultAutoRouting?: boolean;
+  /** Whether opening the AI panel restores the most recently updated conversation. */
+  restoreLastConversation?: boolean;
   /** Prompt template ids auto-applied when the AI panel opens, keyed by connection db_type. */
   defaultTemplatesByDbType?: Record<string, string[]>;
   /** Prompt template ids from the most recent send, keyed by connection db_type. */

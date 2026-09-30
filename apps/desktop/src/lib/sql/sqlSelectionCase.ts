@@ -23,6 +23,30 @@ export function convertSqlSelectionCase(sql: string, range: SqlSelectionRange, m
   });
   if (protectedTokens.length === 0) return convertCase(sql.slice(from, to), mode);
 
+  // An explicit selection whose only word-like content sits inside protected
+  // tokens — a bare string literal, or a value list like `('D','C','B')` — has
+  // no SQL structure that case conversion could damage: everything outside the
+  // protected tokens is punctuation and whitespace, which the conversion leaves
+  // unchanged anyway. Honor the request fully instead of silently no-oping it
+  // (issue #10775: selecting `('D','C','B','B','A')` and converting did
+  // nothing). Selections that reach past protected tokens into identifiers or
+  // keywords keep the protection below.
+  const unprotectedWordCharPattern = /[\p{L}\p{N}_]/u;
+  let unprotectedTextHasWord = false;
+  let unprotectedScan = from;
+  for (const item of protectedTokens) {
+    const literalFrom = Math.max(from, item.span.start);
+    if (unprotectedWordCharPattern.test(sql.slice(unprotectedScan, literalFrom))) {
+      unprotectedTextHasWord = true;
+      break;
+    }
+    unprotectedScan = Math.min(to, Math.max(unprotectedScan, item.span.end));
+  }
+  if (!unprotectedTextHasWord && unprotectedWordCharPattern.test(sql.slice(unprotectedScan, to))) {
+    unprotectedTextHasWord = true;
+  }
+  if (!unprotectedTextHasWord) return convertCase(sql.slice(from, to), mode);
+
   let converted = "";
   let cursor = from;
   for (const item of protectedTokens) {

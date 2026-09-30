@@ -11,6 +11,7 @@ import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.Clob;
 import java.sql.DatabaseMetaData;
@@ -721,6 +722,29 @@ final class DbxJdbcPluginTest {
     }
 
     @Test
+    void readValueUsesStringAccessorForLongVarcharColumns() throws Exception {
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod(
+            "readValue",
+            ResultSet.class,
+            ResultSetMetaData.class,
+            int.class,
+            boolean.class
+        );
+        method.setAccessible(true);
+        ResultSet rs = (ResultSet) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { ResultSet.class },
+            (proxy, invokedMethod, args) -> switch (invokedMethod.getName()) {
+                case "getString" -> "Cache LONGVARCHAR text";
+                case "getObject" -> throw new AssertionError("LONGVARCHAR must use getString");
+                default -> defaultValue(invokedMethod.getReturnType());
+            }
+        );
+
+        assertEquals("Cache LONGVARCHAR text", method.invoke(null, rs, columnMeta(Types.LONGVARCHAR), 1, false));
+    }
+
+    @Test
     void readValueConvertsGaussDbBooleanBytesWithoutCollapsingMultiBitValues() throws Exception {
         Method method = DbxJdbcPlugin.class.getDeclaredMethod(
             "readValue",
@@ -735,6 +759,108 @@ final class DbxJdbcPluginTest {
         assertEquals(false, method.invoke(null, objectResultSet(new byte[] { 'f' }), columnMeta(Types.BIT), 1, false));
         assertEquals(null, method.invoke(null, objectResultSet(null), columnMeta(Types.BIT), 1, false));
         assertEquals("0x0102", method.invoke(null, objectResultSet(new byte[] { 1, 2 }), columnMeta(Types.BIT), 1, false));
+    }
+
+    @Test
+    void readValueRendersBitFieldColumnsAsBitStrings() throws Exception {
+        Method method = bitStringReadValue();
+
+        // MySQL Connector/J 对 bit(n) 直接返回裸位字段，DBX 之前会渲染成 `0x..`。
+        assertEquals("0", method.invoke(null, bytesResultSet(new byte[] { 0x00 }), columnMeta(Types.BIT, "BIT", 1), 1, false, null, true));
+        assertEquals("1", method.invoke(null, bytesResultSet(new byte[] { 0x01 }), columnMeta(Types.BIT, "BIT", 1), 1, false, null, true));
+        assertEquals("10101010", method.invoke(null, bytesResultSet(new byte[] { (byte) 0xaa }), columnMeta(Types.BIT, "BIT", 8), 1, false, null, true));
+        assertEquals("0000000100000010", method.invoke(null, bytesResultSet(new byte[] { 0x01, 0x02 }), columnMeta(Types.BIT, "BIT", 16), 1, false, null, true));
+        assertEquals(null, method.invoke(null, bytesResultSet(null), columnMeta(Types.BIT, "BIT", 1), 1, false, null, true));
+    }
+
+    @Test
+    void readValueRendersTextBitPayloadsAsBitStrings() throws Exception {
+        Method method = bitStringReadValue();
+
+        // 金仓/PostgreSQL 驱动把 bit(n) 当 `0`/`1` 文本返回，getBytes 给出 ASCII 位串。
+        assertEquals("0", method.invoke(null, bytesResultSet(new byte[] { '0' }), columnMeta(Types.BIT, "bit", 1), 1, false, null, true));
+        assertEquals("1", method.invoke(null, bytesResultSet(new byte[] { '1' }), columnMeta(Types.BIT, "bit", 1), 1, false, null, true));
+        assertEquals("10101010", method.invoke(null, bytesResultSet("10101010".getBytes(StandardCharsets.US_ASCII)), columnMeta(Types.BIT, "bit", 8), 1, false, null, true));
+        assertEquals("101", method.invoke(null, bytesResultSet("101".getBytes(StandardCharsets.US_ASCII)), columnMeta(Types.OTHER, "varbit", 3), 1, false, null, true));
+        // 布尔位串按 `t`/`f` 返回时保持布尔语义。
+        assertEquals(true, method.invoke(null, bytesResultSet(new byte[] { 't' }), columnMeta(Types.BIT, "bit", 1), 1, false, null, true));
+        assertEquals(false, method.invoke(null, bytesResultSet(new byte[] { 'f' }), columnMeta(Types.BIT, "bit", 1), 1, false, null, true));
+        // 位宽超出载荷容量（不可信的元数据）时保持原来的 `0x..` 展示。
+        assertEquals("0x0102", method.invoke(null, bytesResultSet(new byte[] { 0x01, 0x02 }), columnMeta(Types.BIT, "BIT", 24), 1, false, null, true));
+        // 没有声明位宽时按数值的最短位宽展开。
+        assertEquals("100000010", method.invoke(null, bytesResultSet(new byte[] { 0x01, 0x02 }), columnMeta(Types.BIT, "BIT", 0), 1, false, null, true));
+    }
+
+    @Test
+    void readValueRendersTinyInt1BitColumnsAsNumbers() throws Exception {
+        Method method = bitStringReadValue();
+
+        // Connector/J 默认把 tinyint(1) 上报成 Types.BIT（位宽 1），超出 0/1 的载荷是数值列，
+        // 截成单个比特会静默丢数据（2 显示成 "0"、3 显示成 "1"），必须按有符号字节十进制展示。
+        assertEquals(Byte.valueOf((byte) 2), method.invoke(null, bytesResultSet(new byte[] { 2 }), columnMeta(Types.BIT, "BIT", 1), 1, false, null, true));
+        assertEquals(Byte.valueOf((byte) 127), method.invoke(null, bytesResultSet(new byte[] { 127 }), columnMeta(Types.BIT, "BIT", 1), 1, false, null, true));
+        assertEquals(Byte.valueOf((byte) -1), method.invoke(null, bytesResultSet(new byte[] { (byte) 0xff }), columnMeta(Types.BIT, "BIT", 1), 1, false, null, true));
+        // 真正的 bit(1) 载荷仍是 0/1，按位串展示。
+        assertEquals("0", method.invoke(null, bytesResultSet(new byte[] { 0x00 }), columnMeta(Types.BIT, "BIT", 1), 1, false, null, true));
+        assertEquals("1", method.invoke(null, bytesResultSet(new byte[] { 0x01 }), columnMeta(Types.BIT, "BIT", 1), 1, false, null, true));
+    }
+
+    @Test
+    void readValueDoesNotTreatMultiBitPayloadsAsBooleanText() throws Exception {
+        Method method = bitStringReadValue();
+
+        // bit(8) 的裸载荷恰好等于 't'/'f' 的字节值时是位字段而不是布尔文本，按位串展开。
+        assertEquals("01110100", method.invoke(null, bytesResultSet(new byte[] { 't' }), columnMeta(Types.BIT, "BIT", 8), 1, false, null, true));
+        assertEquals("01100110", method.invoke(null, bytesResultSet(new byte[] { 'f' }), columnMeta(Types.BIT, "BIT", 8), 1, false, null, true));
+    }
+
+    @Test
+    void readValueKeepsDriverBooleanWhenBitColumnCannotBeReadAsBytes() throws Exception {
+        Method method = bitStringReadValue();
+        // mssql-jdbc 拒绝把 BIT 读成 byte[]，此时必须保持驱动返回的布尔值。
+        ResultSet rs = (ResultSet) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { ResultSet.class },
+            (proxy, invokedMethod, args) -> switch (invokedMethod.getName()) {
+                case "getBytes" -> throw new SQLException("The conversion from bit to byte[] is not supported.");
+                case "getObject" -> Boolean.TRUE;
+                default -> defaultValue(invokedMethod.getReturnType());
+            }
+        );
+
+        assertEquals(true, method.invoke(null, rs, columnMeta(Types.BIT, "bit", 1), 1, false, null, true));
+    }
+
+    @Test
+    void readValueKeepsBooleanSourceColumnBoolean() throws Exception {
+        Method method = bitStringReadValue();
+        // 金仓的布尔列同样上报 Types.BIT，不能被当成位字段。
+        ResultSet rs = (ResultSet) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { ResultSet.class },
+            (proxy, invokedMethod, args) -> switch (invokedMethod.getName()) {
+                case "getBytes" -> new byte[] { 't' };
+                case "getObject" -> Boolean.TRUE;
+                default -> defaultValue(invokedMethod.getReturnType());
+            }
+        );
+
+        assertEquals(true, method.invoke(null, rs, columnMeta(Types.BIT, "bool", 1), 1, false, null, true));
+    }
+
+    @Test
+    void bitStringColumnsMatchOnlyBitFieldDialects() throws Exception {
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod("usesBitStringColumns", JsonNode.class);
+        method.setAccessible(true);
+
+        assertTrue((Boolean) method.invoke(null, MAPPER.readTree("{ \"connection_string\": \"jdbc:mysql://db:3306/demo\" }")));
+        assertTrue((Boolean) method.invoke(null, MAPPER.readTree("{ \"connection_string\": \"jdbc:mariadb://db:3306/demo\" }")));
+        assertTrue((Boolean) method.invoke(null, MAPPER.readTree("{ \"connection_string\": \"jdbc:kingbase8://db:54321/demo\" }")));
+        assertTrue((Boolean) method.invoke(null, MAPPER.readTree("{ \"connection_string\": \"jdbc:postgresql://db:5432/demo\" }")));
+        assertTrue((Boolean) method.invoke(null, MAPPER.readTree("{ \"connection_string\": \"jdbc:vastbase://db:5432/demo\" }")));
+        assertFalse((Boolean) method.invoke(null, MAPPER.readTree("{ \"connection_string\": \"jdbc:sqlserver://db:1433;databaseName=demo\" }")));
+        assertFalse((Boolean) method.invoke(null, MAPPER.readTree("{ \"connection_string\": \"jdbc:oracle:thin:@db:1521/XE\" }")));
+        assertFalse((Boolean) method.invoke(null, MAPPER.readTree("{ \"connection_string\": \"jdbc:h2:mem:dbx\" }")));
     }
 
     @Test
@@ -3186,6 +3312,23 @@ final class DbxJdbcPluginTest {
         return columnMeta(columnType, "");
     }
 
+    private static ResultSetMetaData columnMeta(int columnType, String typeName, int precision) {
+        return (ResultSetMetaData) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { ResultSetMetaData.class },
+            (proxy, method, args) -> {
+                return switch (method.getName()) {
+                    case "getColumnCount" -> 1;
+                    case "getColumnLabel", "getColumnName" -> "FLAG";
+                    case "getColumnType" -> columnType;
+                    case "getColumnTypeName" -> typeName;
+                    case "getPrecision" -> precision;
+                    default -> defaultValue(method.getReturnType());
+                };
+            }
+        );
+    }
+
     private static ResultSetMetaData columnMeta(int columnType, String typeName) {
         return (ResultSetMetaData) Proxy.newProxyInstance(
             DbxJdbcPluginTest.class.getClassLoader(),
@@ -3216,6 +3359,33 @@ final class DbxJdbcPluginTest {
             new Class<?>[] { Connection.class },
             (proxy, method, args) -> switch (method.getName()) {
                 case "getMetaData" -> metadata;
+                default -> defaultValue(method.getReturnType());
+            }
+        );
+    }
+
+    private static Method bitStringReadValue() throws Exception {
+        Method method = DbxJdbcPlugin.class.getDeclaredMethod(
+            "readValue",
+            ResultSet.class,
+            ResultSetMetaData.class,
+            int.class,
+            boolean.class,
+            ZoneId.class,
+            boolean.class
+        );
+        method.setAccessible(true);
+        return method;
+    }
+
+    private static ResultSet bytesResultSet(byte[] value) {
+        return (ResultSet) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { ResultSet.class },
+            (proxy, method, args) -> switch (method.getName()) {
+                // 真实驱动会同时通过 getBytes/getObject 暴露二进制载荷。
+                case "getBytes", "getObject" -> value;
+                case "wasNull" -> value == null;
                 default -> defaultValue(method.getReturnType());
             }
         );
@@ -4307,6 +4477,117 @@ final class DbxJdbcPluginTest {
         );
     }
 
+    private static final class SybaseMetadataDriver implements Driver {
+        private final List<String> calls;
+
+        private SybaseMetadataDriver(List<String> calls) {
+            this.calls = calls;
+        }
+
+        @Override
+        public Connection connect(String url, Properties info) {
+            return acceptsURL(url) ? sybaseMetadataConnection(calls) : null;
+        }
+
+        @Override
+        public boolean acceptsURL(String url) {
+            return url != null && url.startsWith("jdbc:sybase:Tds:sybase-ddl-test:");
+        }
+
+        @Override
+        public DriverPropertyInfo[] getPropertyInfo(String url, Properties info) {
+            return new DriverPropertyInfo[0];
+        }
+
+        @Override
+        public int getMajorVersion() {
+            return 1;
+        }
+
+        @Override
+        public int getMinorVersion() {
+            return 0;
+        }
+
+        @Override
+        public boolean jdbcCompliant() {
+            return false;
+        }
+
+        @Override
+        public java.util.logging.Logger getParentLogger() {
+            return java.util.logging.Logger.getGlobal();
+        }
+    }
+
+    private static Connection sybaseMetadataConnection(List<String> calls) {
+        DatabaseMetaData metadata = (DatabaseMetaData) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { DatabaseMetaData.class },
+            (proxy, method, args) -> {
+                if ("getColumns".equals(method.getName())) {
+                    calls.add("columns:" + metadataArgument(args[0]) + ":" + metadataArgument(args[1]) + ":" + metadataArgument(args[2]));
+                    boolean nullSchema = args[1] == null;
+                    return nullSchema
+                        ? rowsResultSet(
+                            new String[] {
+                                "TABLE_CAT",
+                                "TABLE_SCHEM",
+                                "TABLE_NAME",
+                                "COLUMN_NAME",
+                                "TYPE_NAME",
+                                "IS_NULLABLE",
+                                "NULLABLE",
+                                "COLUMN_DEF",
+                                "REMARKS",
+                                "COLUMN_SIZE",
+                                "DECIMAL_DIGITS"
+                            },
+                            new Object[][] {
+                                { "appdb", "dbo", "orders", "id", "int", "NO", DatabaseMetaData.columnNoNulls, null, null, 10, 0 }
+                            }
+                        )
+                        : rowsResultSet(new String[] { "COLUMN_NAME" }, new Object[0][]);
+                }
+                if ("getPrimaryKeys".equals(method.getName())) {
+                    calls.add("primaryKeys:" + metadataArgument(args[0]) + ":" + metadataArgument(args[1]) + ":" + metadataArgument(args[2]));
+                    return args[1] == null
+                        ? rowsResultSet(
+                            new String[] { "PK_NAME", "COLUMN_NAME", "KEY_SEQ" },
+                            new Object[][] { { "pk_orders", "id", (short) 1 } }
+                        )
+                        : rowsResultSet(new String[] { "PK_NAME", "COLUMN_NAME", "KEY_SEQ" }, new Object[0][]);
+                }
+                if ("getIndexInfo".equals(method.getName())) {
+                    calls.add("indexInfo:" + metadataArgument(args[0]) + ":" + metadataArgument(args[1]) + ":" + metadataArgument(args[2]));
+                    return rowsResultSet(
+                        new String[] { "INDEX_NAME", "COLUMN_NAME", "NON_UNIQUE", "TYPE" },
+                        new Object[0][]
+                    );
+                }
+                if ("getImportedKeys".equals(method.getName())) {
+                    calls.add("importedKeys:" + metadataArgument(args[0]) + ":" + metadataArgument(args[1]) + ":" + metadataArgument(args[2]));
+                    return rowsResultSet(
+                        new String[] { "FK_NAME", "FKCOLUMN_NAME", "PKTABLE_NAME", "PKCOLUMN_NAME" },
+                        new Object[0][]
+                    );
+                }
+                return defaultValue(method.getReturnType());
+            }
+        );
+        return (Connection) Proxy.newProxyInstance(
+            DbxJdbcPluginTest.class.getClassLoader(),
+            new Class<?>[] { Connection.class },
+            (proxy, method, args) -> switch (method.getName()) {
+                case "getMetaData" -> metadata;
+                case "isClosed" -> false;
+                case "isValid" -> true;
+                case "close", "setCatalog", "setSchema" -> null;
+                default -> defaultValue(method.getReturnType());
+            }
+        );
+    }
+
     private static String metadataArgument(Object value) {
         return value == null ? "<null>" : String.valueOf(value);
     }
@@ -5131,5 +5412,128 @@ final class DbxJdbcPluginTest {
             .put("connection_string", "jdbc:oracle:thin:@//db:1521/ORCL");
         String once = DbxJdbcPlugin.enrichDriverHint(connection, "Unsupported charset: ZHS16GBK");
         assertEquals(once, DbxJdbcPlugin.enrichDriverHint(connection, once));
+    }
+
+    @Test
+    void getObjectSourceBuildsSybaseTableDdlWhenMetadataRequiresNullSchema() throws Exception {
+        List<String> calls = new ArrayList<>();
+        Driver driver = new SybaseMetadataDriver(calls);
+        DriverManager.registerDriver(driver);
+        String connection = """
+            {
+              "connection_string": "jdbc:sybase:Tds:sybase-ddl-test:5000",
+              "connect_timeout_secs": 30
+            }
+            """;
+        try {
+            JsonNode response = request("getObjectSource", """
+                {
+                  "connection": %s,
+                  "database": "appdb",
+                  "schema": "dbo",
+                  "name": "orders",
+                  "object_type": "TABLE"
+                }
+                """.formatted(connection));
+
+            assertFalse(response.has("error"), response.toString());
+            String source = response.path("result").path("source").asText();
+            assertTrue(source.startsWith("CREATE TABLE \"dbo\".\"orders\""), source);
+            assertTrue(source.contains("\"id\" int NOT NULL"), source);
+            assertTrue(source.contains("PRIMARY KEY (\"id\")"), source);
+            assertTrue(calls.contains("columns:appdb:dbo:orders"), calls.toString());
+            assertTrue(calls.contains("columns:appdb:<null>:orders"), calls.toString());
+            assertTrue(calls.contains("primaryKeys:appdb:<null>:orders"), calls.toString());
+        } finally {
+            closeAndDeregister(connection, driver);
+        }
+    }
+
+    @Test
+    void getObjectSourceBuildsExecutableTableDdlForPlainJdbcDrivers() throws Exception {
+        String sourceDb = "jdbc:h2:mem:dbx_ddl_src;DB_CLOSE_DELAY=-1";
+        try (Statement st = DriverManager.getConnection(sourceDb, "sa", "").createStatement()) {
+            st.execute("CREATE TABLE \"dbx_ddl_parent\"(id BIGINT NOT NULL, CONSTRAINT pk_ddl_parent PRIMARY KEY(id))");
+            st.execute("CREATE TABLE \"dbx_ddl_child\"("
+                + "id BIGINT NOT NULL, name VARCHAR(50) NOT NULL DEFAULT 'x', parent_id BIGINT, "
+                + "CONSTRAINT pk_ddl_child PRIMARY KEY(id), "
+                + "CONSTRAINT fk_ddl_child FOREIGN KEY(parent_id) REFERENCES \"dbx_ddl_parent\"(id))");
+            st.execute("CREATE UNIQUE INDEX \"uq_ddl_child_name\" ON \"dbx_ddl_child\"(name)");
+        }
+
+        JsonNode response = request("getObjectSource", """
+            {
+              "connection": { "connection_string": "%s", "username": "sa", "connect_timeout_secs": 30 },
+              "name": "dbx_ddl_child",
+              "object_type": "TABLE"
+            }
+            """.formatted(sourceDb));
+
+        assertFalse(response.has("error"), response.toString());
+        JsonNode result = response.path("result");
+        assertEquals("TABLE", result.path("object_type").asText());
+        String source = result.path("source").asText();
+        assertTrue(source.startsWith("CREATE TABLE "), source);
+        assertTrue(source.contains("PRIMARY KEY"), source);
+        assertTrue(source.contains("NOT NULL"), source);
+        assertTrue(source.contains("DEFAULT"), source);
+        assertTrue(source.contains("FOREIGN KEY"), source);
+        assertTrue(source.contains("REFERENCES"), source);
+        assertTrue(source.contains("CREATE UNIQUE INDEX"), source);
+
+        // The generated DDL must be executable: rebuild the child table in a
+        // fresh database that only has the parent, then verify the rebuilt
+        // structure matches the original (columns, PK, FK, unique index).
+        String targetUrl = "jdbc:h2:mem:dbx_ddl_tgt;DB_CLOSE_DELAY=-1";
+        try (Statement st = DriverManager.getConnection(targetUrl, "sa", "").createStatement()) {
+            st.execute("CREATE TABLE \"dbx_ddl_parent\"(id BIGINT NOT NULL, CONSTRAINT pk_ddl_parent PRIMARY KEY(id))");
+            for (String statement : source.split(";")) {
+                if (!statement.isBlank()) {
+                    st.execute(statement);
+                }
+            }
+        }
+        try (Statement st = DriverManager.getConnection(targetUrl, "sa", "").createStatement();
+             ResultSet rs = st.executeQuery("""
+                SELECT
+                  (SELECT COUNT(*) FROM information_schema.columns
+                     WHERE table_name = 'dbx_ddl_child') AS column_count,
+                  (SELECT COUNT(*) FROM information_schema.table_constraints
+                     WHERE table_name = 'dbx_ddl_child' AND constraint_type = 'PRIMARY KEY') AS pk_count,
+                  (SELECT COUNT(*) FROM information_schema.table_constraints
+                     WHERE table_name = 'dbx_ddl_child' AND constraint_type = 'FOREIGN KEY') AS fk_count,
+                  (SELECT COUNT(*) FROM information_schema.indexes
+                     WHERE table_name = 'dbx_ddl_child' AND index_name = 'uq_ddl_child_name') AS uq_index_count
+                """)) {
+            assertTrue(rs.next());
+            assertEquals(3, rs.getInt("column_count"));
+            assertEquals(1, rs.getInt("pk_count"));
+            assertEquals(1, rs.getInt("fk_count"));
+            assertEquals(1, rs.getInt("uq_index_count"));
+        }
+
+        request("close", """
+            { "connection": { "connection_string": "%s", "username": "sa" } }
+            """.formatted(sourceDb));
+        request("close", """
+            { "connection": { "connection_string": "%s", "username": "sa" } }
+            """.formatted(targetUrl));
+    }
+
+    @Test
+    void getObjectSourceKeepsUnsupportedObjectTypesOnPlainJdbcDrivers() throws Exception {
+        JsonNode response = request("getObjectSource", """
+            {
+              "connection": %s,
+              "name": "some_view",
+              "object_type": "VIEW"
+            }
+            """.formatted(CONNECTION));
+
+        assertTrue(response.has("error"), response.toString());
+        assertEquals(
+            "Object source is not supported by this JDBC driver",
+            response.path("error").path("message").asText()
+        );
     }
 }

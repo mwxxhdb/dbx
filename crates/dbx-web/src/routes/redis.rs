@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use crate::error::AppError;
 use crate::state::WebState;
+use dbx_core::db::redis_driver::RedisKeysExpiryResult;
 
 /// Check if a connection is read-only and return an error if so.
 async fn ensure_writable(
@@ -264,10 +265,36 @@ pub struct RedisSetExpireAtRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct RedisKeysTtlRequest {
+    pub connection_id: String,
+    pub db: u32,
+    pub key_raws: Vec<String>,
+    pub ttl: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedisKeysExpireAtRequest {
+    pub connection_id: String,
+    pub db: u32,
+    pub key_raws: Vec<String>,
+    pub expire_at: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RedisKeysRequest {
     pub connection_id: String,
     pub db: u32,
     pub key_raws: Vec<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedisKeysByPatternRequest {
+    pub connection_id: String,
+    pub db: u32,
+    pub pattern: String,
 }
 
 #[derive(Deserialize)]
@@ -381,6 +408,17 @@ pub async fn get_value(
     let result = dbx_core::redis_ops::redis_get_value_in_db_core(&state.app, &req.connection_id, req.db, &req.key_raw)
         .await
         .map_err(AppError::from)?;
+    Ok(Json(serde_json::to_value(result).map_err(|e| AppError::from(e.to_string()))?))
+}
+
+pub async fn get_raw_value(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<RedisKeyRequest>,
+) -> Result<Json<serde_json::Value>, AppError> {
+    let result =
+        dbx_core::redis_ops::redis_get_raw_value_in_db_core(&state.app, &req.connection_id, req.db, &req.key_raw)
+            .await
+            .map_err(AppError::from)?;
     Ok(Json(serde_json::to_value(result).map_err(|e| AppError::from(e.to_string()))?))
 }
 
@@ -791,6 +829,40 @@ pub async fn set_expire_at(
     Ok(Json(()))
 }
 
+pub async fn set_keys_ttl(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<RedisKeysTtlRequest>,
+) -> Result<Json<RedisKeysExpiryResult>, AppError> {
+    ensure_writable(&state.app, &req.connection_id, "EXPIRE").await?;
+    let result = dbx_core::redis_ops::redis_set_keys_ttl_in_db_core(
+        &state.app,
+        &req.connection_id,
+        req.db,
+        &req.key_raws,
+        req.ttl,
+    )
+    .await
+    .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
+pub async fn set_keys_expire_at(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<RedisKeysExpireAtRequest>,
+) -> Result<Json<RedisKeysExpiryResult>, AppError> {
+    ensure_writable(&state.app, &req.connection_id, "EXPIREAT").await?;
+    let result = dbx_core::redis_ops::redis_set_keys_expire_at_in_db_core(
+        &state.app,
+        &req.connection_id,
+        req.db,
+        &req.key_raws,
+        req.expire_at,
+    )
+    .await
+    .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
 pub async fn delete_keys(
     State(state): State<Arc<WebState>>,
     Json(req): Json<RedisKeysRequest>,
@@ -800,6 +872,22 @@ pub async fn delete_keys(
         dbx_core::redis_ops::redis_delete_keys_in_db_core(&state.app, &req.connection_id, req.db, &req.key_raws)
             .await
             .map_err(AppError::from)?;
+    Ok(Json(result))
+}
+
+pub async fn delete_keys_by_pattern(
+    State(state): State<Arc<WebState>>,
+    Json(req): Json<RedisKeysByPatternRequest>,
+) -> Result<Json<u64>, AppError> {
+    ensure_writable(&state.app, &req.connection_id, "Delete keys").await?;
+    let result = dbx_core::redis_ops::redis_delete_keys_by_pattern_in_db_core(
+        &state.app,
+        &req.connection_id,
+        req.db,
+        &req.pattern,
+    )
+    .await
+    .map_err(AppError::from)?;
     Ok(Json(result))
 }
 

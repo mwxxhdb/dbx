@@ -33,7 +33,7 @@ import java.util.Set;
 public final class SundbAgent extends AbstractJdbcAgent {
     @Override
     protected String driverClass() {
-        return "com.sundb.jdbc.SundbDriver";
+        return "csii.sundb.jdbc.SundbDriver";
     }
 
     @Override
@@ -129,7 +129,7 @@ public final class SundbAgent extends AbstractJdbcAgent {
         return unchecked(() -> {
             List<ObjectInfo> result = new ArrayList<>();
             for (TableInfo table : listTables(schema)) {
-                result.add(new ObjectInfo(table.getName(), table.getTable_type(), schema, table.getComment()));
+                result.add(new ObjectInfo(table.getName(), table.getTable_type(), schema, table.getComment(), table.getValid()));
             }
 
             try (var stmt = requireConnected().prepareStatement(

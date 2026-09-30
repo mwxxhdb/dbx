@@ -7,7 +7,6 @@
 use dbx_core::connection::AppState;
 use dbx_core::docs::{NoteSource, SnapshotWarning};
 use dbx_core::models::connection::{ConnectionConfig, DatabaseType};
-use dbx_core::storage::Storage;
 
 fn live_postgres_config(
     id: &str,
@@ -62,9 +61,14 @@ fn live_postgres_config(
         redis_scan_page_size: None,
         redis_database_aliases: Default::default(),
         redis_key_templates: Vec::new(),
+        redis_key_grouping: None,
         etcd_endpoints: String::new(),
         gbase_server: String::new(),
         informix_server: String::new(),
+        plugin_id: None,
+        plugin_connection_provider: None,
+        plugin_connection_type: None,
+        connection_secrets: Default::default(),
         external_config: None,
         jdbc_driver_class: None,
         jdbc_driver_paths: Vec::new(),
@@ -74,6 +78,7 @@ fn live_postgres_config(
         is_production: false,
         production_databases: vec![],
         show_system_schemas: false,
+        sidebar_auto_load_all_tables: false,
         database_info: None,
     }
 }
@@ -125,7 +130,7 @@ async fn annotations_reach_the_generated_dbml() {
 
     let dir = std::env::temp_dir().join(format!("dbx-live-postgres-docs-annotations-{suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
-    let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+    let storage = dbx_core::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap();
     let state = AppState::new(storage);
     state.configs.write().await.insert(config.id.clone(), config.clone());
 

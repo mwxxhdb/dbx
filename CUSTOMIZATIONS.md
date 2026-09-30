@@ -7,7 +7,7 @@
 ## 分支与同步
 
 ```
-upstream  = https://github.com/t8y2/dbx.git   只读
+github    = https://github.com/t8y2/dbx.git   上游，只读（remote 名是 github）
 origin    = git@github.com:mwxxhdb/dbx.git    fork
 
 upstream-main   纯镜像分支，只做 fast-forward，永不提交自己的东西
@@ -61,9 +61,11 @@ main            定制分支
 
 **意图**：通过 `DBX_CONN_*` 环境变量声明数据源，每次启动完全覆盖 id 以 `env-` 开头的连接，手动建的连接不受影响。
 
+**上游改了 `save_connections` 语义时怎么办**：2026-09-30 同步时上游把 `save_connections` 从「整表覆盖」改成了「按 id upsert」，删除只能走新增的 `delete_connections`。于是环境里去掉的 `env-*` 连接不再被清掉，`applying_env_connections_persists_them_and_keeps_manual_ones` 变红。现在 `apply_env_connections_from` 在保存后显式删除 `stale_env_connection_ids` 算出的旧 id。上游若再改存储 API，这条测试会第一个报出来。
+
 **真正的逻辑在** `crates/dbx-web/src/env_connections.rs`（新增文件，不会冲突）。
 
-**上游重写 main.rs 时怎么办**：找到 `Storage::open` 之后、`AppState::new_*` 之前的位置，把那段 `match env_connections::apply_env_connections(...)` 重新插进去即可。唯一要求是 storage 已经初始化完毕。
+**上游重写 main.rs 时怎么办**：找到 `Storage::open_unmigrated(...).with_secret_key_policy(...)` 之后、`AppState::new_*` 之前的位置，把那段 `match env_connections::apply_env_connections(...)` 重新插进去即可。唯一要求是 storage 已经初始化完毕，**且 secret key policy 已经设好**（2026-09-30 同步时上游把 `Storage::open` 改成了 `open_unmigrated` + `with_secret_key_policy(ManagedDataDir)`，`save_connections` 会用这个策略加密密码，钩子必须在策略设置之后）。
 
 **上游改了 ConnectionConfig 时怎么办**：大概率不用动。`env_connections.rs` 用 `serde_json::from_value` 构造，只提供无 serde default 的字段（id/name/db_type/host/port/username/password/database）。只有当上游给这几个字段之一改名，或新增一个没有 default 的必填字段时才会失败——那时 `parse_env_connection` 的单测会直接报出来。
 
@@ -209,28 +211,15 @@ build step。
 
 ### 测试基线（不知道这些会把正常的合并误判成回归）
 
-截至 2026-08-25（上一次上游同步之后重新实测）：
+截至 2026-09-30（上一次上游同步之后重新实测）：
 
-- `cargo test -p dbx-web`：**144 passed / 0 failed**，必须全绿。（2026-08-13 时是 129，上游此后自己加了 15 个。）
-- `pnpm test`：**有 9 个文件 / 72 个用例是既有失败**，全部是 happy-dom 没有实现
-  `localStorage.removeItem` / `localStorage.clear` / `localStorage.getItem`，与本仓库的定制
-  无关。只有超出这 9 个文件的失败才算回归：
+- `cargo test -p dbx-web`：**179 passed / 0 failed / 1 ignored**，必须全绿。（2026-08-25 时是 144，上游此后自己加了一批。）
+- `pnpm test`：**1592 个文件 / 18476 个用例全绿**。2026-08-25 时还有 9 个文件 / 72 个用例因 happy-dom
+  缺 `localStorage.removeItem` / `clear` / `getItem` 而既有失败，上游已修好。输出里大量的
+  `ECONNREFUSED 127.0.0.1:3000` 和 `AbortError` 是 stderr 噪音，不代表失败，看最后的
+  `Test Files` / `Tests` 汇总行即可。
 
-  ```
-  components/grid/__tests__/DataGridSurfaces.spec.ts              39
-  components/meilisearch/__tests__/MeilisearchTasksPage.spec.ts    8
-  lib/__tests__/sql/externalSqlFileTarget.spec.ts                  7
-  components/mqtt/__tests__/MqttPublishDialog.spec.ts              6
-  components/meilisearch/__tests__/MeilisearchKeysPage.spec.ts     5
-  components/codeSnapshot/__tests__/CodeSnapshotDialog.spec.ts     4
-  lib/meilisearch/meilisearchTaskColumns.spec.ts                   3
-  lib/meilisearch/meilisearchKeyColumns.spec.ts                    3
-  components/mqtt/__tests__/MqttAdminConsolePause.spec.ts          2
-  ```
-
-  2026-08-13 时这个清单只有前两个文件、28 个用例；上游此后新增的 spec 撞上了同一个
-  happy-dom 缺口，数字才涨到 9 / 72。**这个清单会随上游继续变**，别把它当成一个固定
-  数字。判断某个失败是不是上游自带的，可靠做法是把它放到纯上游上重跑一遍：
+  如果以后又出现失败，判断是不是上游自带的，可靠做法是把它放到纯上游上重跑一遍：
 
   ```bash
   git worktree add /tmp/upstream-wt upstream-main
@@ -239,7 +228,6 @@ build step。
   git worktree remove --force /tmp/upstream-wt
   ```
 
-  同一组文件在纯上游上也红，就是上游自带的。2026-08-25 这次同步正是这样确认的：
-  合并后的 main 与纯 upstream-main 都是 9 个文件 / 72 个用例，逐字一致。
+  同一组文件在纯上游上也红，就是上游自带的。
 - **跑 `pnpm test` 之前先把 cargo 编译缓存热起来**（`cargo build --tests` 或 `cargo test -p dbx-web`）。`exportSmoke.spec.ts` 会在 `beforeAll` 里冷编译一个 Rust example，而 hook 超时固定 120 秒；只要有 Rust 改动导致重新编译，这个 spec 第一次就会假失败，重跑（缓存已热）就过。
 - `pnpm typecheck` 和 `pnpm lint` 必须干净。`pnpm lint` 偶尔会 OOM 退出（`Linter process terminated abnormally`），那是环境问题，直接跑 `npx oxlint --vue-plugin apps/desktop/src` 即可。

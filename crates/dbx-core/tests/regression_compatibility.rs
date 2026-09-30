@@ -15,6 +15,7 @@ fn basic_table_info(name: &str) -> TableInfo {
     TableInfo {
         name: name.to_string(),
         table_type: "BASE TABLE".to_string(),
+        valid: None,
         comment: None,
         parent_schema: None,
         parent_name: None,
@@ -35,6 +36,7 @@ fn col(name: &str, data_type: &str) -> ColumnInfo {
         numeric_precision: None,
         numeric_scale: None,
         character_maximum_length: None,
+        metadata_capabilities: None,
         enum_values: None,
         character_set: None,
         collation: None,
@@ -144,6 +146,7 @@ fn generate_schema_sync_sql_output_invariant() {
         diff_type: "added".to_string(),
         object_type: None,
         name: "users".to_string(),
+        target_name: None,
         columns: Some(vec![]),
         indexes: None,
         foreign_keys: None,
@@ -236,6 +239,7 @@ fn data_compare_from_tables_preparation_optional_fields_default() {
         target_row_count: 0,
         source_truncated: false,
         target_truncated: false,
+        row_budget: 100_000,
         degradation_level: None,
         sampling_rate: None,
         confidence_score: None,
@@ -249,6 +253,8 @@ fn data_compare_from_tables_preparation_optional_fields_default() {
     // Core fields must be present
     assert!(json.get("result").is_some(), "result must be present");
     assert!(json.get("syncSql").is_some(), "syncSql must be present");
+    // The row budget travels with the preparation so the UI can flag a partial compare.
+    assert_eq!(json.get("rowBudget").and_then(|value| value.as_u64()), Some(100_000));
 
     // New optional fields should be absent when None
     assert!(json.get("degradationLevel").is_none(), "degradationLevel should be absent");

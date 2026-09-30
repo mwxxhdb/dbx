@@ -7,7 +7,6 @@ use dbx_core::db::postgres;
 use dbx_core::models::connection::{ConnectionConfig, DatabaseType};
 use dbx_core::query::execute_sql_statement;
 use dbx_core::query_result_export::{export_query_result_core, ExportStatus, QueryResultExportRequest};
-use dbx_core::storage::Storage;
 
 fn live_postgres_config(
     id: &str,
@@ -62,10 +61,15 @@ fn live_postgres_config(
         redis_scan_page_size: None,
         redis_database_aliases: Default::default(),
         redis_key_templates: Vec::new(),
+        redis_key_grouping: None,
         etcd_endpoints: String::new(),
         gbase_server: String::new(),
         informix_server: String::new(),
         external_config: None,
+        plugin_id: None,
+        plugin_connection_provider: None,
+        plugin_connection_type: None,
+        connection_secrets: Default::default(),
         jdbc_driver_class: None,
         jdbc_driver_paths: Vec::new(),
         one_time: false,
@@ -74,6 +78,7 @@ fn live_postgres_config(
         is_production: false,
         production_databases: vec![],
         show_system_schemas: false,
+        sidebar_auto_load_all_tables: false,
         database_info: None,
     }
 }
@@ -112,7 +117,7 @@ async fn live_postgres_query_result_export_uses_single_streamed_query() {
 
     let dir = std::env::temp_dir().join(format!("dbx-live-postgres-query-export-{suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
-    let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+    let storage = dbx_core::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap();
     let state = AppState::new(storage);
     let connection_id = "live-postgres-query-export";
     let config = live_postgres_config(connection_id, &host, port, &user, &password, &database);
@@ -134,6 +139,7 @@ async fn live_postgres_query_result_export_uses_single_streamed_query() {
         use_agent_cursor: false,
         file_path: file_path.to_string_lossy().to_string(),
         format: "csv".to_string(),
+        insert_mode: Default::default(),
         include_sql_sheet: false,
         page_size: 100,
         row_limit: None,
@@ -144,12 +150,17 @@ async fn live_postgres_query_result_export_uses_single_streamed_query() {
         execution_id: Some(format!("live-postgres-query-export-{suffix}")),
         date_time_format: None,
         csv_quote_mode: Default::default(),
+        null_literal: String::new(),
         export_table_name: None,
         export_column_types: None,
+        selected_columns: None,
+        export_column_extras: None,
         column_comments: None,
         auto_filter: None,
         identifier_quote: None,
         numeric_column_right_align: false,
+        exclude_primary_keys: false,
+        primary_keys: Vec::new(),
     };
     let done_seen = AtomicBool::new(false);
     let result = export_query_result_core(&state, &request, None, |progress| {
@@ -197,7 +208,7 @@ async fn live_postgres_query_result_xlsx_preserves_temporal_cell_types() {
 
     let dir = std::env::temp_dir().join(format!("dbx-live-postgres-xlsx-temporal-{suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
-    let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+    let storage = dbx_core::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap();
     let state = AppState::new(storage);
     let connection_id = "live-postgres-xlsx-temporal";
     let config = live_postgres_config(connection_id, &host, port, &user, &password, &database);
@@ -217,6 +228,7 @@ async fn live_postgres_query_result_xlsx_preserves_temporal_cell_types() {
         use_agent_cursor: false,
         file_path: file_path.to_string_lossy().to_string(),
         format: "xlsx".to_string(),
+        insert_mode: Default::default(),
         include_sql_sheet: false,
         page_size: 100,
         row_limit: None,
@@ -227,12 +239,17 @@ async fn live_postgres_query_result_xlsx_preserves_temporal_cell_types() {
         execution_id: Some(format!("live-postgres-xlsx-temporal-{suffix}")),
         date_time_format: None,
         csv_quote_mode: Default::default(),
+        null_literal: String::new(),
         export_table_name: None,
         export_column_types: None,
+        selected_columns: None,
+        export_column_extras: None,
         column_comments: None,
         auto_filter: None,
         identifier_quote: None,
         numeric_column_right_align: false,
+        exclude_primary_keys: false,
+        primary_keys: Vec::new(),
     };
 
     export_query_result_core(&state, &request, None, |_| {}).await.expect("export temporal XLSX");
@@ -262,7 +279,7 @@ async fn live_postgres_numeric_xlsx_ignores_fractional_trailing_zeros() {
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let dir = std::env::temp_dir().join(format!("dbx-live-postgres-xlsx-numeric-{suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
-    let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+    let storage = dbx_core::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap();
     let state = AppState::new(storage);
     let connection_id = "live-postgres-xlsx-numeric";
     let config = live_postgres_config(connection_id, &host, port, &user, &password, &database);
@@ -289,6 +306,7 @@ async fn live_postgres_numeric_xlsx_ignores_fractional_trailing_zeros() {
         use_agent_cursor: false,
         file_path: file_path.to_string_lossy().to_string(),
         format: "xlsx".to_string(),
+        insert_mode: Default::default(),
         include_sql_sheet: false,
         page_size: 100,
         row_limit: None,
@@ -299,12 +317,17 @@ async fn live_postgres_numeric_xlsx_ignores_fractional_trailing_zeros() {
         execution_id: Some(format!("live-postgres-xlsx-numeric-{suffix}")),
         date_time_format: None,
         csv_quote_mode: Default::default(),
+        null_literal: String::new(),
         export_table_name: None,
         export_column_types: None,
+        selected_columns: None,
+        export_column_extras: None,
         column_comments: None,
         auto_filter: None,
         identifier_quote: None,
         numeric_column_right_align: true,
+        exclude_primary_keys: false,
+        primary_keys: Vec::new(),
     };
 
     export_query_result_core(&state, &request, None, |_| {}).await.expect("export numeric XLSX");
@@ -337,7 +360,7 @@ async fn live_postgres_truncated_batch_result_export_replays_safe_temp_setup() {
     let config = live_postgres_config(&connection_id, &host, port, &user, &password, &database);
     let dir = std::env::temp_dir().join(format!("dbx-live-postgres-temp-export-{short_suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
-    let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+    let storage = dbx_core::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap();
     let state = AppState::new(storage);
     state.configs.write().await.insert(config.id.clone(), config);
 
@@ -366,6 +389,7 @@ async fn live_postgres_truncated_batch_result_export_replays_safe_temp_setup() {
         use_agent_cursor: false,
         file_path: dir.join("result.csv").to_string_lossy().to_string(),
         format: "csv".to_string(),
+        insert_mode: Default::default(),
         include_sql_sheet: false,
         page_size: 2000,
         row_limit: None,
@@ -376,12 +400,17 @@ async fn live_postgres_truncated_batch_result_export_replays_safe_temp_setup() {
         execution_id: Some(format!("temp-export-csv-{short_suffix}")),
         date_time_format: None,
         csv_quote_mode: Default::default(),
+        null_literal: String::new(),
         export_table_name: None,
         export_column_types: None,
+        selected_columns: None,
+        export_column_extras: None,
         column_comments: None,
         auto_filter: None,
         identifier_quote: None,
         numeric_column_right_align: false,
+        exclude_primary_keys: false,
+        primary_keys: Vec::new(),
     };
     let csv_rows = AtomicU64::new(0);
     export_query_result_core(&state, &request, None, |progress| {
@@ -426,7 +455,7 @@ async fn live_postgres_xlsx_export_can_outlive_query_timeout_while_rows_keep_arr
     let config = live_postgres_config(&connection_id, &host, port, &user, &password, &database);
     let dir = std::env::temp_dir().join(format!("dbx-live-postgres-query-export-timeout-{suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
-    let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+    let storage = dbx_core::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap();
     let state = AppState::new(storage);
     state.configs.write().await.insert(config.id.clone(), config);
 
@@ -445,6 +474,7 @@ async fn live_postgres_xlsx_export_can_outlive_query_timeout_while_rows_keep_arr
         use_agent_cursor: false,
         file_path: file_path.to_string_lossy().to_string(),
         format: "xlsx".to_string(),
+        insert_mode: Default::default(),
         include_sql_sheet: false,
         page_size: 10_000,
         row_limit: None,
@@ -455,12 +485,17 @@ async fn live_postgres_xlsx_export_can_outlive_query_timeout_while_rows_keep_arr
         execution_id: Some(format!("live-postgres-query-export-timeout-{suffix}")),
         date_time_format: None,
         csv_quote_mode: Default::default(),
+        null_literal: String::new(),
         export_table_name: None,
         export_column_types: None,
+        selected_columns: None,
+        export_column_extras: None,
         column_comments: None,
         auto_filter: None,
         identifier_quote: None,
         numeric_column_right_align: false,
+        exclude_primary_keys: false,
+        primary_keys: Vec::new(),
     };
     let rows_exported = AtomicU64::new(0);
     let done_seen = AtomicBool::new(false);
@@ -496,7 +531,7 @@ async fn live_postgres_stream_still_times_out_without_progress_and_recovers() {
     let config = live_postgres_config(&connection_id, &host, port, &user, &password, &database);
     let dir = std::env::temp_dir().join(format!("dbx-live-postgres-query-export-stall-{suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
-    let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+    let storage = dbx_core::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap();
     let state = AppState::new(storage);
     state.configs.write().await.insert(config.id.clone(), config);
 
@@ -515,6 +550,7 @@ async fn live_postgres_stream_still_times_out_without_progress_and_recovers() {
         use_agent_cursor: false,
         file_path: file_path.to_string_lossy().to_string(),
         format: "csv".to_string(),
+        insert_mode: Default::default(),
         include_sql_sheet: false,
         page_size: 100,
         row_limit: None,
@@ -525,12 +561,17 @@ async fn live_postgres_stream_still_times_out_without_progress_and_recovers() {
         execution_id: Some(format!("live-postgres-query-export-stall-{suffix}")),
         date_time_format: None,
         csv_quote_mode: Default::default(),
+        null_literal: String::new(),
         export_table_name: None,
         export_column_types: None,
+        selected_columns: None,
+        export_column_extras: None,
         column_comments: None,
         auto_filter: None,
         identifier_quote: None,
         numeric_column_right_align: false,
+        exclude_primary_keys: false,
+        primary_keys: Vec::new(),
     };
     let started_at = Instant::now();
     let result = export_query_result_core(&state, &request, None, |_| {}).await;

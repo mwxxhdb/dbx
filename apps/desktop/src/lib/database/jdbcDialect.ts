@@ -2,7 +2,7 @@ import type { ConnectionConfig, DatabaseType } from "@/types/database";
 import { isSchemaAware, spannerObjectTreeSchema, usesDatabaseObjectTreeMode, usesTreeSchemaMode } from "@/lib/database/databaseFeatureSupport";
 import type { CodeMirrorSqlDialectName } from "@/lib/editor/codemirrorSqlDialect";
 
-type JdbcDialectConnection = Partial<Pick<ConnectionConfig, "db_type" | "driver_profile" | "driver_label" | "connection_string" | "url_params" | "jdbc_driver_class" | "jdbc_driver_paths" | "database_info" | "external_config">>;
+type JdbcDialectConnection = Partial<Pick<ConnectionConfig, "db_type" | "driver_profile" | "driver_label" | "connection_string" | "url_params" | "jdbc_driver_class" | "jdbc_driver_paths" | "database_info" | "external_config" | "username">>;
 
 export type GaussdbIdentifierQuoteStyle = "auto" | "double" | "backtick";
 export type GaussdbConnectionMode = "native" | "m-jdbc";
@@ -15,7 +15,7 @@ const GAUSSDB_COUNT_QUERY_DOP_KEY = "gaussdbCountQueryDop";
 export const GAUSSDB_M_JDBC_DRIVER_PROFILE = "gaussdb-m";
 export const GAUSSDB_M_JDBC_DRIVER_CLASS = "com.huawei.gaussdb.jdbc.Driver";
 
-const DATABASE_AS_EXECUTION_SCHEMA_TYPES = new Set<DatabaseType>(["hive", "kyuubi", "impala", "argo", "spark"]);
+const DATABASE_AS_EXECUTION_SCHEMA_TYPES = new Set<DatabaseType>(["hive", "kyuubi", "impala", "argo", "transwarp", "spark"]);
 const CONNECTION_ROOT_SCHEMA_TYPES = new Set<DatabaseType>(["oracle", "dameng", "oceanbase-oracle"]);
 
 const JDBC_DIALECT_MATCHERS: Array<{ type: DatabaseType; patterns: RegExp[] }> = [
@@ -38,11 +38,14 @@ const JDBC_DIALECT_MATCHERS: Array<{ type: DatabaseType; patterns: RegExp[] }> =
   { type: "sqlserver", patterns: [/jdbc:sqlserver:/i, /sqlserver/i, /mssql/i] },
   { type: "oracle", patterns: [/jdbc:oracle:/i, /oracle/i] },
   { type: "clickhouse", patterns: [/jdbc:clickhouse:/i, /clickhouse/i] },
+  { type: "tdengine", patterns: [/jdbc:taos(?:-rs|-ws)?:/i, /taosdata/i, /tdengine/i] },
   { type: "h2", patterns: [/jdbc:h2:/i, /\bh2\b/i] },
   { type: "sqlite", patterns: [/jdbc:sqlite:/i, /sqlite/i] },
   { type: "db2", patterns: [/jdbc:db2:/i, /\bdb2\b/i] },
   { type: "informix", patterns: [/jdbc:informix/i, /informix/i] },
-  { type: "iris", patterns: [/jdbc:(?:iris|cache):/i, /com\.intersystems\.jdbc\.(?:IRIS|Cache)Driver/i, /intersystems-jdbc/i] },
+  // CacheDB.jar (legacy Caché driver) carries none of the intersystems URL or
+  // class-name markers, so match the jar file name / driver label directly.
+  { type: "iris", patterns: [/jdbc:(?:iris|cache):/i, /com\.intersystems\.jdbc\.(?:IRIS|Cache)Driver/i, /intersystems-jdbc/i, /\bcache(?:db)?\b/i] },
 ];
 
 // ASE uses Transact-SQL, but treating it as SQL Server globally would also
@@ -62,6 +65,29 @@ export function inferJdbcDialect(connection?: JdbcDialectConnection): DatabaseTy
 
 export function jdbcDriverProfileUsesSchemaQualification(driverProfile?: string): boolean {
   return inferJdbcDialect({ db_type: "jdbc", driver_profile: driverProfile }) === "jdbc";
+}
+
+/**
+ * Whether a JDBC-backed table view must let the driver skip `rowOffset` rows
+ * instead of expecting SQL pagination.
+ *
+ * Generic JDBC (`DatabaseType::Jdbc` → `AgentMaxRows`) and Iris (`IrisTop`) are
+ * the two dialects that cannot express a page offset in the generated SELECT:
+ * generic JDBC emits no LIMIT/OFFSET at all and Iris only has `TOP`. Without the
+ * driver-side offset the agent re-runs the same unbounded statement for every
+ * page, so the grid keeps rendering page one (#9015).
+ *
+ * The Oracle, Dameng and Yashan driver families are excluded because the JDBC
+ * agent passes `maxRows + 1` to `Statement.setMaxRows` for them, which caps the
+ * result set *before* the skipped rows — those drivers paginate in SQL instead.
+ */
+const JDBC_STATEMENT_MAX_ROWS_URL_PREFIXES = ["jdbc:oracle:", "jdbc:dm:", "jdbc:yasdb:"];
+
+export function jdbcConnectionUsesDriverRowOffset(connection: JdbcDialectConnection | undefined, effectiveDatabaseType: DatabaseType | undefined): boolean {
+  if (connection?.db_type !== "jdbc") return false;
+  if (effectiveDatabaseType !== "iris" && effectiveDatabaseType !== "jdbc") return false;
+  const url = connection.connection_string?.trim().toLowerCase() ?? "";
+  return !JDBC_STATEMENT_MAX_ROWS_URL_PREFIXES.some((prefix) => url.startsWith(prefix));
 }
 
 export function effectiveDatabaseTypeForConnection(connection?: JdbcDialectConnection): DatabaseType | undefined {
@@ -107,6 +133,7 @@ export function connectionShouldLoadIdentifierQuote(connection: JdbcDialectConne
   if (!connection) return false;
   if (connection.db_type === "gbase" && isGbase8sProfile(connection.driver_profile)) return true;
   if (connection.db_type === "kingbase") return true;
+  if (connection.db_type === "kyuubi") return true;
   // Cloud Spanner is dual-dialect: the agent reports a backtick for GoogleSQL and
   // a double quote for PostgreSQL-dialect databases. The backend counts Spanner
   // unconditionally in `uses_connection_identifier_quote`, so the UI must fetch
@@ -212,6 +239,8 @@ export function connectionUsesDatabaseObjectTreeMode(connection?: JdbcDialectCon
   const dialect = inferJdbcDialect(connection);
   if (!dialect) return true;
   if (dialect === "hive" || dialect === "trino") return false;
+  // TDengine exposes databases as the top-level namespace, without schemas.
+  if (dialect === "tdengine") return false;
   if (dialect === "databend") return true;
   return !usesTreeSchemaMode(dialect);
 }
@@ -263,6 +292,21 @@ export function connectionObjectTreeQuerySchema(connection: JdbcDialectConnectio
 }
 
 /**
+ * Schema sent with object-list (listObjects) requests. Dameng's object SQL
+ * filters on a fixed `WHERE o.OWNER = ?`, so a blank schema matches nothing and
+ * the object tab renders empty when the schema could not be resolved (#8301).
+ * Mirror the completion path (connectionStore.listCompletionColumns) and fall
+ * back to the connection username — uppercased, the Oracle-family storage
+ * convention for unquoted Dameng users. Other Oracle-family types keep the
+ * blank schema so the backend resolves the current schema itself.
+ */
+export function objectListSchemaForConnection(connection: JdbcDialectConnection | undefined, schema?: string): string {
+  if (schema) return schema;
+  if (effectiveDatabaseTypeForConnection(connection) !== "dameng") return "";
+  return connection?.username?.trim().toUpperCase() || "";
+}
+
+/**
  * Metadata schema for query paths that treat the database name as the schema when a
  * connection exposes no schema level (MySQL, HBase, and the other flat engines).
  * Cloud Spanner is the exception: its database is a resource path, so the blank
@@ -290,6 +334,12 @@ export function connectionObjectTreeNodeSchema(connection: JdbcDialectConnection
   if (!type) return schema;
   if (!schema && databaseNameIsNotASchema(type)) return undefined;
   return isSchemaAware(type) ? schema || database : undefined;
+}
+
+/** GBase 8s reports the table owner as a schema, but does not accept it in table DML/DDL names. */
+export function connectionTableSqlSchema(connection: JdbcDialectConnection | undefined, schema?: string): string | undefined {
+  if (connection?.db_type === "gbase" && isGbase8sProfile(connection.driver_profile)) return undefined;
+  return schema;
 }
 
 /** Maps a database type to the corresponding CodeMirror SQL dialect name used by QueryEditor and DdlViewDialog. */

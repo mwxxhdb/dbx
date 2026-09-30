@@ -173,6 +173,7 @@ fn connection_config(id: &str, database: BenchDatabase) -> Result<ConnectionConf
         visible_database_patterns: None,
         visible_schemas: None,
         show_system_schemas: false,
+        sidebar_auto_load_all_tables: false,
         attached_databases: Vec::new(),
         init_script: None,
         color: None,
@@ -199,10 +200,15 @@ fn connection_config(id: &str, database: BenchDatabase) -> Result<ConnectionConf
         redis_scan_page_size: None,
         redis_database_aliases: Default::default(),
         redis_key_templates: Vec::new(),
+        redis_key_grouping: None,
         etcd_endpoints: String::new(),
         gbase_server: String::new(),
         informix_server: String::new(),
         external_config: None,
+        plugin_id: None,
+        plugin_connection_provider: None,
+        plugin_connection_type: None,
+        connection_secrets: Default::default(),
         jdbc_driver_class: None,
         jdbc_driver_paths: Vec::new(),
         one_time: false,
@@ -401,6 +407,8 @@ fn import_request(
         date_time_format: None,
         prepared_source: None,
         retain_source: false,
+        conflict_policy: None,
+        skip_duplicate_rows: false,
     }
 }
 

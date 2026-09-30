@@ -1,4 +1,5 @@
-import { createApp, type ShallowRef } from "vue";
+import { applyDdlStoragePreference, supportsDdlStoragePreference } from "@/lib/sql/ddlStorage";
+import { watch, createApp, getCurrentScope, onScopeDispose, type ShallowRef } from "vue";
 import { useI18n } from "vue-i18n";
 import i18n from "@/i18n";
 import { useExportTracker, type ExportTask } from "@/composables/useExportTracker";
@@ -15,10 +16,25 @@ import { joinExportedDdls } from "@/lib/export/ddlExport";
 import { translateBackendError } from "@/i18n/backend-errors";
 import { sidebarStructureExportTargets, sidebarTableDataExportTargets } from "@/lib/sidebar/sidebarExportRuntime";
 import { fetchTableDataForExport } from "@/lib/table/tableDataExport";
+import { dropsSchemaQualifier } from "@/lib/table/tableSelectSql";
 import XlsxHeaderDialog from "@/components/export/XlsxHeaderDialog.vue";
 import { buildXlsxHeaderOverrides, hasXlsxHeaderComments, type XlsxExportOptions, type XlsxHeaderMode } from "@/lib/export/xlsxHeader";
-import { isLoadingStructurePreview, showStructureDocCopyDialog, showStructurePreviewDialog, structureDocCopyText, structureDocCopyTitle, structurePreviewDefaultFileName, structurePreviewError, structurePreviewSql, structurePreviewTitle } from "@/components/sidebar/sidebarTreeDialogState";
+import {
+  isLoadingStructurePreview,
+  showStructureDocCopyDialog,
+  showStructurePreviewDialog,
+  structureDocCopyText,
+  structureDocCopyTitle,
+  structurePreviewDefaultFileName,
+  structurePreviewError,
+  structurePreviewSql,
+  structurePreviewTitle,
+  structurePreviewDdlStorageType,
+} from "@/components/sidebar/sidebarTreeDialogState";
 import type { CsvQuoteMode } from "@/lib/export/csvQuoteMode";
+import { csvNullLiteralForMode } from "@/lib/export/csvNullMode";
+import type { SqlInsertDialect } from "@/lib/export/sqlInsertMode";
+import { uuid } from "@/lib/common/utils";
 
 type StructureCopyFormat = "tsv" | "markdown";
 
@@ -44,6 +60,8 @@ interface SidebarTableExportTarget {
   batchSize: number;
   rowLimit: number | null;
   csvQuoteMode: CsvQuoteMode;
+  /** 导出 CSV 时 NULL 的字面量；空串表示关闭（旧行为）。 */
+  nullLiteral: string;
   fileNameBase?: string;
 }
 
@@ -77,6 +95,7 @@ interface ExportTableDataOptions {
   autoFilter?: boolean;
   outputDirectory?: string;
   suppressDoneToast?: boolean;
+  insertDialect?: SqlInsertDialect;
 }
 
 function joinExportFilePath(directory: string, fileName: string): string {
@@ -125,28 +144,62 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
     return sidebarTableDataExportTargets(activeNode.value, connectionStore.treeNodes, options.acceptedSelectionIds() ?? connectionStore.selectedTreeNodeIds);
   }
 
+  let structureSource: Array<{ ddl: string; databaseType: ReturnType<typeof effectiveDatabaseTypeForConnection> }> = [];
+  let structureRequestId = 0;
+  function invalidateStructureRequest() {
+    structureRequestId++;
+    structureSource = [];
+    isLoadingStructurePreview.value = false;
+  }
+  watch(
+    showStructurePreviewDialog,
+    (visible) => {
+      if (!visible) invalidateStructureRequest();
+    },
+    { flush: "sync" },
+  );
+  if (getCurrentScope()) onScopeDispose(invalidateStructureRequest);
+  function renderStructurePreview() {
+    structurePreviewSql.value = joinExportedDdls(structureSource.map(({ ddl, databaseType }) => applyDdlStoragePreference(ddl, databaseType, settingsStore.editorSettings.excludeDdlStorage)));
+  }
+  watch(
+    () => settingsStore.editorSettings.excludeDdlStorage,
+    () => {
+      if (showStructurePreviewDialog.value && structureSource.length) renderStructurePreview();
+    },
+  );
+
   async function exportStructure() {
     const targets = structureExportTargets();
     if (!targets.length) return;
+    const requestId = ++structureRequestId;
+    const requestSource: typeof structureSource = [];
     isLoadingStructurePreview.value = true;
     structurePreviewError.value = "";
     structurePreviewSql.value = "";
+    structurePreviewDdlStorageType.value = undefined;
+    structureSource = [];
     structurePreviewTitle.value = targets.length === 1 ? t("contextMenu.exportStructurePreviewTitle", { name: targets[0]!.label }) : t("contextMenu.exportStructurePreviewTitleMultiple", { count: targets.length });
     structurePreviewDefaultFileName.value = targets.length === 1 ? `${targets[0]!.label}.sql` : "structures.sql";
     showStructurePreviewDialog.value = true;
     try {
-      const parts: string[] = [];
       for (const target of targets) {
         await connectionStore.ensureConnected(target.connectionId);
+        if (requestId !== structureRequestId) return;
         const ddl = await api.getTableDdl(target.connectionId, target.database, target.schema || target.database, target.label, tableDdlObjectTypeForNode(target.type), target.catalog, true);
-        parts.push(ddl.trim());
+        if (requestId !== structureRequestId) return;
+        const databaseType = effectiveDatabaseTypeForConnection(connectionStore.getConfig(target.connectionId));
+        requestSource.push({ ddl, databaseType });
       }
-      structurePreviewSql.value = joinExportedDdls(parts);
+      structureSource = requestSource;
+      structurePreviewDdlStorageType.value = requestSource.map(({ databaseType }) => databaseType).find(supportsDdlStoragePreference);
+      renderStructurePreview();
     } catch (error: any) {
+      if (requestId !== structureRequestId) return;
       structurePreviewError.value = error?.message || String(error);
       console.error("Export structure failed:", error);
     } finally {
-      isLoadingStructurePreview.value = false;
+      if (requestId === structureRequestId) isLoadingStructurePreview.value = false;
     }
   }
 
@@ -269,21 +322,33 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
     return typeof selected === "string" ? selected : null;
   }
 
-  async function resolveTableExportOutputPath(target: SidebarTableExportTarget, format: string, outputDirectory?: string): Promise<string | null> {
-    const fileName = `${target.fileNameBase ?? target.tableName}.${format}`;
+  function exportFilterName(format: string): string {
+    if (format === "csv") return "CSV";
+    if (format === "json") return "JSON";
+    if (format === "ndjson") return "NDJSON";
+    if (format === "bson" || format === "bson.gz") return "MongoDB BSON dump";
+    if (format === "xlsx") return "Excel";
+    return "SQL";
+  }
+
+  async function resolveExportOutputPath(fileNameBase: string, format: string, outputDirectory?: string): Promise<string | null> {
+    const fileName = `${fileNameBase}.${format}`;
     if (outputDirectory !== undefined) {
       return outputDirectory ? joinExportFilePath(outputDirectory, fileName) : fileName;
     }
     if (isTauriRuntime()) {
       const { save } = await import("@tauri-apps/plugin-dialog");
-      const filterName = format === "csv" ? "CSV" : format === "json" ? "JSON" : format === "xlsx" ? "Excel" : "SQL";
       const path = await save({
         defaultPath: fileName,
-        filters: [{ name: filterName, extensions: [format] }],
+        filters: [{ name: exportFilterName(format), extensions: [format === "bson.gz" ? "gz" : format] }],
       });
       return path ? String(path) : null;
     }
     return fileName;
+  }
+
+  async function resolveTableExportOutputPath(target: SidebarTableExportTarget, format: string, outputDirectory?: string): Promise<string | null> {
+    return resolveExportOutputPath(target.fileNameBase ?? target.tableName, format, outputDirectory);
   }
 
   async function exportDataLegacyForTarget(target: SidebarTableExportTarget, outputDirectory?: string, suppressDoneToast = false) {
@@ -294,6 +359,8 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
     try {
       await connectionStore.ensureConnected(connectionId);
       const queryColumns = config.db_type === "neo4j" ? (await api.getColumns(connectionId, database, target.metadataSchema, target.tableName, target.catalog)).map((column) => column.name) : undefined;
+      const useAgentCursor = config.db_type === "cassandra";
+      const clientSessionId = useAgentCursor ? `table-export:${uuid()}` : undefined;
       const result = await fetchTableDataForExport({
         databaseType: target.databaseType,
         identifierQuote: target.identifierQuote,
@@ -301,7 +368,17 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
         tableName: target.tableName,
         tableType: target.tableType,
         columns: queryColumns,
-        executePage: (sql) => api.executeQuery(connectionId, database, sql),
+        useAgentCursor,
+        executePage: (sql, cursorOptions) => (cursorOptions ? api.executeQuery(connectionId, database, sql, undefined, undefined, { ...cursorOptions, clientSessionId, catalog: target.catalog, timeoutSecs: config.query_timeout_secs }) : api.executeQuery(connectionId, database, sql)),
+        closeCursor: useAgentCursor
+          ? async (sessionId) => {
+              try {
+                if (sessionId) await api.closeQuerySession(connectionId, database, sessionId, clientSessionId, target.catalog);
+              } finally {
+                await api.closeClientConnectionSession(connectionId, database, clientSessionId!, target.catalog);
+              }
+            }
+          : undefined,
       });
 
       const outputPath = await resolveTableExportOutputPath(target, "json", outputDirectory);
@@ -363,6 +440,7 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
       batchSize: editorSettings.exportBatchSize,
       rowLimit: editorSettings.exportRowLimitEnabled ? editorSettings.exportRowLimit : null,
       csvQuoteMode: editorSettings.csvQuoteMode,
+      nullLiteral: csvNullLiteralForMode(editorSettings.csvNullMode),
     };
   }
 
@@ -375,7 +453,7 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
   }
 
   async function exportTableData(target: SidebarTableExportTarget, format: "csv" | "xlsx" | "sql", exportOptions: ExportTableDataOptions = {}) {
-    const { columnInfos, headerMode = "name", autoFilter = true, outputDirectory, suppressDoneToast = false } = exportOptions;
+    const { columnInfos, headerMode = "name", autoFilter = true, outputDirectory, suppressDoneToast = false, insertDialect = "source" } = exportOptions;
     const { connectionId, database } = target;
 
     let task: ExportTask | null = null;
@@ -398,11 +476,11 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
           executePage: (sql) => api.executeQuery(connectionId, database, sql),
         });
         if (format === "csv") {
-          await api.exportQueryResultCsv(outputPath, result.columns, result.rows, target.csvQuoteMode);
+          await api.exportQueryResultCsv(outputPath, result.columns, result.rows, target.csvQuoteMode, target.nullLiteral);
         } else {
           const comments = result.columns.map((name) => exportColumnInfos?.find((column) => column.name.toLocaleLowerCase() === name.toLocaleLowerCase())?.comment);
           const headerOverrides = buildXlsxHeaderOverrides(result.columns, comments, headerMode);
-          await api.exportQueryResultXlsx(outputPath, target.tableName, result.columns, result.column_types ?? result.columns.map(() => ""), headerOverrides, result.rows, undefined, autoFilter);
+          await api.exportQueryResultXlsx(outputPath, target.tableName, result.columns, result.column_types ?? result.columns.map(() => ""), headerOverrides, result.rows, undefined, autoFilter, settingsStore.editorSettings.globalDateTimeExportFormat || undefined);
         }
         currentTask.status = "Done";
         currentTask.rowsExported = result.rows.length;
@@ -427,11 +505,19 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
         tableName: target.tableName,
         filePath: outputPath,
         format,
+        ...(format === "sql"
+          ? {
+              insertDialect,
+              omitDatabaseQualifier: dropsSchemaQualifier(target.databaseType, settingsStore.editorSettings.generateSqlIncludeDatabaseName, target.catalog),
+            }
+          : {}),
         csvQuoteMode: target.csvQuoteMode,
+        nullLiteral: target.nullLiteral,
         columns: queryColumns,
         columnComments,
         autoFilter: format === "xlsx" ? autoFilter : undefined,
         primaryKeys,
+        excludePrimaryKeys: settingsStore.editorSettings.dataGridExtractorOptions.sql.excludePrimaryKeysFromInsert === true,
         batchSize: target.batchSize,
         skipCount: format === "sql",
         rowLimit: target.rowLimit,
@@ -460,7 +546,53 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
     return pickTableExportDirectory();
   }
 
-  async function exportData(format: "csv" | "json" | "sql") {
+  async function exportMongoCollection(outputFormat: "csv" | "ndjson" | "bson" | "bsonGzip") {
+    const node = activeNode.value;
+    if (node.type !== "mongo-collection" || !node.connectionId || !node.database) return;
+    const format: api.MongoExportFormat = outputFormat === "bsonGzip" ? "bson" : outputFormat;
+    const fileExtension = outputFormat === "bsonGzip" ? "bson.gz" : outputFormat;
+    const outputPath = await resolveExportOutputPath(node.label, fileExtension);
+    if (!outputPath) return;
+    let task: ExportTask | null = null;
+    try {
+      await connectionStore.ensureConnected(node.connectionId);
+      task = addExportTask(node.label, format, outputPath);
+      const currentTask = task;
+      await api.exportMongodbQuery(
+        {
+          exportId: currentTask.exportId,
+          connectionId: node.connectionId,
+          database: node.database,
+          collection: node.label,
+          format,
+          includeHeader: true,
+          gzip: outputFormat === "bsonGzip",
+          filePath: outputPath,
+        },
+        (progress) => {
+          currentTask.rowsExported = progress.documentsRead;
+          currentTask.totalRows = progress.totalDocuments ?? null;
+          if (progress.status === "running") currentTask.status = "Writing";
+          else if (progress.status === "done") {
+            currentTask.status = "Done";
+            currentTask.finishedAt = Date.now();
+          } else if (progress.status === "error") {
+            currentTask.status = "Error";
+            currentTask.errorMessage = progress.errorMessage ?? null;
+          } else if (progress.status === "cancelled") currentTask.status = "Cancelled";
+        },
+      );
+      toast(t("grid.exported"));
+    } catch (error: unknown) {
+      if (task) {
+        task.status = "Error";
+        task.errorMessage = error instanceof Error ? error.message : String(error);
+      }
+      toast(t("grid.exportFailed", { message: translateBackendError(t, error) }), 5000);
+    }
+  }
+
+  async function exportData(format: "csv" | "json" | "sql", insertDialect: SqlInsertDialect = "source") {
     const targets = currentTableExportTargets();
     if (!targets.length) return;
 
@@ -478,7 +610,7 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
 
     let exported = 0;
     for (const target of targets) {
-      if (await exportTableData(target, format, { outputDirectory, suppressDoneToast: targets.length > 1 })) exported += 1;
+      if (await exportTableData(target, format, { outputDirectory, suppressDoneToast: targets.length > 1, insertDialect })) exported += 1;
     }
     if (targets.length > 1 && exported > 0) toast(t("contextMenu.exportDataMultipleSuccess", { count: exported }));
   }
@@ -530,6 +662,7 @@ export function useSidebarTreeExportRuntime(options: SidebarTreeExportRuntimeOpt
     copyStructurePreview,
     exportData,
     exportDataXlsx,
+    exportMongoCollection,
     exportStructure,
     saveStructurePreview,
     selectTextareaContent,

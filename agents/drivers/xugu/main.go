@@ -1384,6 +1384,9 @@ func (s *server) validateConnection() error {
 }
 
 func openDB(params connectParams) (*sql.DB, error) {
+	if configuredDatabaseName(params) == "" {
+		return nil, errors.New("XuguDB requires an existing database name; set Database or include DB in the connection string")
+	}
 	dsn := buildDSN(params)
 	db, err := sql.Open("xugu", dsn)
 	if err != nil {
@@ -1920,13 +1923,47 @@ func isXuguMissingOnNullColumnError(err error) bool {
 }
 
 func xuguDSNValue(dsn string, key string) string {
-	for _, part := range strings.Split(dsn, ";") {
+	var result string
+	for _, part := range splitXuguDSNSegments(dsn) {
 		name, value, ok := strings.Cut(part, "=")
 		if ok && strings.EqualFold(strings.TrimSpace(name), key) {
-			return strings.TrimSpace(value)
+			value = strings.TrimSpace(value)
+			if len(value) >= 2 && value[0] == '\'' && value[len(value)-1] == '\'' {
+				value = strings.ReplaceAll(value[1:len(value)-1], "''", "'")
+			}
+			result = strings.TrimSpace(value)
 		}
 	}
-	return ""
+	return result
+}
+
+func splitXuguDSNSegments(dsn string) []string {
+	var segments []string
+	var current strings.Builder
+	inQuotes := false
+
+	for index := 0; index < len(dsn); index++ {
+		character := dsn[index]
+		if character == '\'' {
+			current.WriteByte(character)
+			if inQuotes && index+1 < len(dsn) && dsn[index+1] == '\'' {
+				current.WriteByte(dsn[index+1])
+				index++
+			} else {
+				inQuotes = !inQuotes
+			}
+			continue
+		}
+		if character == ';' && !inQuotes {
+			segments = append(segments, current.String())
+			current.Reset()
+			continue
+		}
+		current.WriteByte(character)
+	}
+
+	segments = append(segments, current.String())
+	return segments
 }
 
 func (s *server) listSchemas() ([]string, error) {
@@ -2769,7 +2806,28 @@ func (s *server) getColumns(schema, table string) ([]columnInfo, error) {
 		item.NumericPrecision, item.NumericScale, item.CharacterMaximumLength = decodeXuguScale(item.DataType, scale)
 		result = append(result, item)
 	}
-	return emptyIfNil(result), rows.Err()
+	if err := rows.Err(); err != nil {
+		_ = s.closeRows(rows)
+		return nil, err
+	}
+	if err := s.closeRows(rows); err != nil {
+		return nil, err
+	}
+
+	// Xugu exposes IDENTITY/AUTO_INCREMENT columns through the serial
+	// metadata catalogs rather than through DEF_VAL. Enrich the common column
+	// contract with the value already understood by the desktop data generator.
+	// This lookup is deliberately optional: an account may read ALL_COLUMNS
+	// while lacking access to ALL_SEQUENCES, and that must not make ordinary
+	// column metadata unavailable.
+	if identities, identityErr := s.tableIdentities(schema, table); identityErr == nil {
+		for index := range result {
+			if xuguIdentityMatchesColumn(result[index].Name, identities) {
+				result[index].Extra = stringPtr("auto_increment")
+			}
+		}
+	}
+	return emptyIfNil(result), nil
 }
 
 func (s *server) queryColumnRows(schema, table string) (*sql.Rows, bool, error) {
@@ -4546,6 +4604,22 @@ func (s *server) tableIdentities(schema, table string) (map[string]xuguIdentityI
 	return result, rows.Err()
 }
 
+// xuguIdentityMatchesColumn keeps identity enrichment safe for catalog views
+// that may normalize unquoted names differently from ALL_COLUMNS. Exact
+// matches win; a case-insensitive match is accepted only when unambiguous.
+func xuguIdentityMatchesColumn(columnName string, identities map[string]xuguIdentityInfo) bool {
+	if _, ok := identities[columnName]; ok {
+		return true
+	}
+	matches := 0
+	for identityColumn := range identities {
+		if strings.EqualFold(identityColumn, columnName) {
+			matches++
+		}
+	}
+	return matches == 1
+}
+
 func (s *server) tableConstraints(schema, table string) ([]xuguConstraintInfo, error) {
 	return s.readTableConstraints(xuguTableConstraintsSQL, schema, table)
 }
@@ -6002,13 +6076,27 @@ func quoteIdentifier(value string) string {
 }
 
 func normalizeValue(value any) any {
+	return normalizeValueWithType(value, "")
+}
+
+// normalizeValueWithType converts a scanned driver value into a JSON-friendly
+// value. columnTypeName drives temporal formatting: XuguDB rejects the ISO
+// "T"/"Z" literal (E19138 时间值常数错误) that time.RFC3339Nano produces, so
+// the round-trippable form is a space-separated wall-clock string. Timezone-
+// aware Xugu types keep the numeric offset; timezone-less ones (DATE/DATETIME/
+// TIME/TIMESTAMP) drop it so clients do not double-apply a shift. Mirrors the
+// oracle-go/kingbase-go timezone-less handling, adapted to Xugu's space rule.
+func normalizeValueWithType(value any, columnTypeName string) any {
 	switch v := value.(type) {
 	case nil:
 		return nil
 	case []byte:
 		return string(v)
 	case time.Time:
-		return v.Format(time.RFC3339Nano)
+		if isXuguTimezoneAwareTemporal(columnTypeName) {
+			return v.Format("2006-01-02 15:04:05.999999999 -07:00")
+		}
+		return v.Format("2006-01-02 15:04:05.999999999")
 	case int:
 		return int64(v)
 	case int8:
@@ -6038,6 +6126,13 @@ func normalizeValue(value any) any {
 	default:
 		return fmt.Sprint(v)
 	}
+}
+
+// isXuguTimezoneAwareTemporal reports whether the column type carries a real
+// timezone (…WITH TIME ZONE), so its formatted literal must keep the offset.
+func isXuguTimezoneAwareTemporal(columnTypeName string) bool {
+	normalized := strings.ToUpper(strings.TrimSpace(columnTypeName))
+	return strings.Contains(normalized, "WITH TIME ZONE")
 }
 
 func emptyIfNil[T any](values []T) []T {

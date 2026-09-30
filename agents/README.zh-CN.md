@@ -31,9 +31,11 @@ DBX 的 Agent 驱动 —— 通过 JDBC 和原生数据库驱动支持各种数�
 | snowflake | Snowflake | Snowflake JDBC |
 | trino | Trino (Presto) | Trino JDBC |
 | hive | Apache Hive | 原生 Go HS2 agent |
+| transwarp | 星环 Inceptor | 内置官方 JDBC 驱动 Agent |
 | db2 | IBM DB2 | DB2 JDBC |
 | informix | IBM Informix | Informix JDBC |
 | neo4j | Neo4j | 官方 Neo4j Go Driver 原生 Agent |
+| nebula | NebulaGraph 3.x | 官方 NebulaGraph Go Client 原生 Agent |
 | cassandra | Apache Cassandra 2.1+ | Apache cassandra-gocql-driver 原生 Agent |
 | bigquery | Google BigQuery | BigQuery JDBC |
 | spanner | Google Cloud Spanner | Google Cloud Spanner JDBC |
@@ -49,6 +51,8 @@ DBX 的 Agent 驱动 —— 通过 JDBC 和原生数据库驱动支持各种数�
 | zookeeper | Apache ZooKeeper | go-zookeeper 原生 Agent |
 | rabbitmq | RabbitMQ | amqp091-go 原生 agent |
 | rocketmq | Apache RocketMQ | rocketmq-admin-go 原生 agent |
+| iris | InterSystems IRIS | InterSystems IRIS JDBC |
+| cache | InterSystems Caché | InterSystems Caché JDBC (CacheDB) |
 
 
 ## 多 JRE 支持

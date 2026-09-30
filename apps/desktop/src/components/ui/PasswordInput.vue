@@ -4,6 +4,8 @@ import { useI18n } from "vue-i18n";
 import { Eye, EyeOff } from "@lucide/vue";
 import { Input } from "@/components/ui/input";
 
+defineOptions({ inheritAttrs: false });
+
 const model = defineModel<string>();
 
 const props = withDefaults(
@@ -29,7 +31,7 @@ const toggleLabel = computed(() => (visible.value ? props.hideLabel || t("common
 
 <template>
   <div :class="props.class" class="relative">
-    <Input v-model="model" :type="visible ? 'text' : 'password'" :placeholder="placeholder" :disabled="disabled" :class="[props.inputClass, props.showToggle ? 'pr-8' : undefined]" v-bind="$attrs" />
+    <Input v-model="model" data-password-input :type="visible ? 'text' : 'password'" :placeholder="placeholder" :disabled="disabled" :class="[props.inputClass, props.showToggle ? 'pr-8' : undefined]" v-bind="$attrs" />
     <button
       v-if="props.showToggle"
       type="button"

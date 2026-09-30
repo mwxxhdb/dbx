@@ -452,6 +452,34 @@ func TestBuildDSNUsesConnectionFields(t *testing.T) {
 	}
 }
 
+func TestOpenDBRejectsMissingDatabaseBeforeOpeningDriver(t *testing.T) {
+	tests := []struct {
+		name   string
+		params connectParams
+	}{
+		{name: "empty structured database", params: connectParams{Host: "db.example.com", Username: "app"}},
+		{name: "whitespace structured database", params: connectParams{Host: "db.example.com", Database: " \t ", Username: "app"}},
+		{name: "empty native DSN database", params: connectParams{ConnectionString: "IP=db.example.com;DB=;User=app"}},
+		{name: "quoted whitespace native DSN database", params: connectParams{ConnectionString: "IP=db.example.com;DB='  ';User=app"}},
+		{name: "URL without database", params: connectParams{ConnectionString: "xugu://app:secret@db.example.com:5138/"}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			db, err := openDB(test.params)
+			if err == nil {
+				if db != nil {
+					_ = db.Close()
+				}
+				t.Fatal("expected missing database to be rejected before opening the driver")
+			}
+			if !strings.Contains(err.Error(), "XuguDB requires an existing database name") {
+				t.Fatalf("unexpected missing-database error: %v", err)
+			}
+		})
+	}
+}
+
 func TestBuildDSNUsesDefaultPort(t *testing.T) {
 	dsn := buildDSN(connectParams{
 		Host:     "db.example.com",
@@ -707,6 +735,9 @@ func TestConfiguredDatabaseName(t *testing.T) {
 		{params: connectParams{ConnectionString: "xugu://user:secret@db.example.com:5138/demo"}, want: "demo"},
 		{params: connectParams{ConnectionString: "jdbc:xugu://db.example.com:5138/reporting"}, want: "reporting"},
 		{params: connectParams{ConnectionString: "IP=db.example.com;DB=SYSTEM;User=SYSDBA;PWD=secret"}, want: "SYSTEM"},
+		{params: connectParams{ConnectionString: "IP=db.example.com;DB='shop;east';User=APP"}, want: "shop;east"},
+		{params: connectParams{ConnectionString: "IP=db.example.com;DB='sales''east';User=APP"}, want: "sales'east"},
+		{params: connectParams{ConnectionString: "IP=db.example.com;DB='  ';User=APP"}, want: ""},
 	}
 
 	for _, tc := range cases {
@@ -963,6 +994,42 @@ func TestXuguPrimaryKeyMatchingDoesNotGuessAmbiguousCase(t *testing.T) {
 	primaryKeys := map[string]bool{"ID": true, "id": true}
 	if xuguPrimaryKeyMatches("Id", primaryKeys) {
 		t.Fatal("must not choose between primary-key names that differ only by case")
+	}
+}
+
+func TestGetColumnsMarksXuguIdentityColumnsAsAutoIncrement(t *testing.T) {
+	db, err := sql.Open("xugu-test-table-ddl", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	s := newServer()
+	s.db = db
+	columns, err := s.getColumns("APP", "CHILD")
+	if err != nil {
+		t.Fatalf("get columns: %v", err)
+	}
+	if len(columns) != 2 {
+		t.Fatalf("expected two columns, got %#v", columns)
+	}
+	if columns[0].Name != "ID" || columns[0].Extra == nil || *columns[0].Extra != "auto_increment" {
+		t.Fatalf("identity column should be marked auto_increment: %#v", columns[0])
+	}
+	if columns[1].Name != "PARENT_ID" || columns[1].Extra != nil {
+		t.Fatalf("ordinary column must not be marked auto_increment: %#v", columns[1])
+	}
+}
+
+func TestXuguIdentityColumnMatchingIsCaseInsensitiveOnlyWhenUnambiguous(t *testing.T) {
+	if !xuguIdentityMatchesColumn("id", map[string]xuguIdentityInfo{"ID": {Column: "ID"}}) {
+		t.Fatal("expected an unambiguous case-insensitive identity match")
+	}
+	if xuguIdentityMatchesColumn("id", map[string]xuguIdentityInfo{
+		"ID": {Column: "ID"},
+		"Id": {Column: "Id"},
+	}) {
+		t.Fatal("ambiguous case-insensitive identity names must not match")
 	}
 }
 
@@ -3954,4 +4021,36 @@ func waitForXuguActiveOperation(t *testing.T, s *server) {
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("operation did not become active")
+}
+
+func TestNormalizeValueWithTypeFormatsXuguWritableTemporals(t *testing.T) {
+	// XuguDB rejects the ISO "T"/"Z" literal that RFC3339Nano produces
+	// (E19138 时间值常数错误), so temporal values must round-trip as a
+	// space-separated wall-clock string. See issue #8110.
+	loc := time.FixedZone("CST", 8*3600)
+	instant := time.Date(2026, 6, 1, 19, 42, 21, 17_000_000, loc)
+
+	cases := []struct {
+		name       string
+		columnType string
+		expected   string
+	}{
+		{name: "datetime", columnType: "DATETIME", expected: "2026-06-01 19:42:21.017"},
+		{name: "timestamp", columnType: "TIMESTAMP", expected: "2026-06-01 19:42:21.017"},
+		{name: "date", columnType: "DATE", expected: "2026-06-01 19:42:21.017"},
+		{name: "unknown type falls back to timezone-less", columnType: "", expected: "2026-06-01 19:42:21.017"},
+		{name: "datetime with time zone keeps offset", columnType: "DATETIME WITH TIME ZONE", expected: "2026-06-01 19:42:21.017 +08:00"},
+		{name: "timestamp with time zone keeps offset", columnType: "TIMESTAMP(6) WITH TIME ZONE", expected: "2026-06-01 19:42:21.017 +08:00"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := normalizeValueWithType(instant, tc.columnType)
+			if got != tc.expected {
+				t.Fatalf("normalizeValueWithType(%q) = %q, want %q", tc.columnType, got, tc.expected)
+			}
+			if str, ok := got.(string); ok && strings.ContainsAny(str, "TZ") {
+				t.Fatalf("formatted temporal %q still contains an ISO T/Z literal Xugu rejects", str)
+			}
+		})
+	}
 }

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildEditorFontThemeRules, buildSqlCompletionThemeRules, editorDiagnosticColors, editorThemeAppearanceFor, resolveCustomThemeBackgrounds, resolveEditorTheme } from "@/lib/editor/editorThemes";
+import { buildEditorFontThemeRules, buildSqlCompletionThemeRules, editorDiagnosticColors, editorThemeAppearanceFor, IDE_EDITOR_THEMES, resolveCustomThemeBackgrounds, resolveEditorTheme, SQL_BUILTIN_HIGHLIGHT_TAG } from "@/lib/editor/editorThemes";
 import { DEFAULT_APP_CUSTOM_UI_COLORS, wcagContrastRatio, type AppThemePalette } from "@/lib/app/appTheme";
 import type { EditorTheme } from "@/stores/settingsStore";
+import { createDbxCodeMirrorSqlDialect } from "@/lib/editor/codemirrorSqlDialect";
+import * as langSql from "@codemirror/lang-sql";
 
 describe("resolveEditorTheme", () => {
   it("maps only the follow-app editor theme to application IDE palettes", () => {
@@ -148,6 +150,27 @@ describe("custom editor theme backgrounds", () => {
   });
 });
 
+describe("Cursor editor theme selection", () => {
+  // The Cursor palettes track Cursor/VS Code's own `editor.selectionBackground`
+  // (#264F78 dark, #ADD6FF light). They previously used translucent neutrals
+  // (#40404099 over #181818, #1414141e over #fcfcfc) which composited to #303030 /
+  // #e1e1e1 — visually almost identical to the editor background, so a mouse
+  // selection was hard to spot.
+  it("paints the selection opaque and clearly visible on the editor background", () => {
+    const dark = IDE_EDITOR_THEMES.cursorDark;
+    const light = IDE_EDITOR_THEMES.cursorLight;
+
+    expect(dark.selection).toBe("#264f78");
+    expect(light.selection).toBe("#add6ff");
+    // Opaque, so the highlight cannot wash out against the editor background.
+    expect(dark.selection).toMatch(/^#[0-9a-f]{6}$/);
+    expect(light.selection).toMatch(/^#[0-9a-f]{6}$/);
+    // Selected text must stay legible inside the highlight.
+    expect(wcagContrastRatio(dark.foreground, dark.selection), `cursor-dark text on selection`).toBeGreaterThanOrEqual(3.0);
+    expect(wcagContrastRatio(light.foreground, light.selection), `cursor-light text on selection`).toBeGreaterThanOrEqual(3.0);
+  });
+});
+
 describe("SQL completion theme", () => {
   it("uses the configurable medium radius for the popup container", () => {
     const rules = buildSqlCompletionThemeRules();
@@ -191,7 +214,49 @@ describe("SQL completion theme", () => {
   });
 });
 
+describe("SQL builtin highlight tag", () => {
+  // #7950: count/date_format/etc. were added to the dialect builtin word lists (#7222) but
+  // never actually rendered in a distinct color, because the theme's highlight rule matched
+  // standard(variableName) while @codemirror/lang-sql tags builtin words as standard(name) —
+  // variableName is a *child* tag of name, so a rule keyed on the child never matches the
+  // token's actual (parent) tag.
+  it("gives builtin SQL functions their own highlight class, distinct from plain identifiers and keywords", async () => {
+    const { highlightTree } = await import("@lezer/highlight");
+    const { HighlightStyle } = await import("@codemirror/language");
+    const { tags } = await import("@lezer/highlight");
+    const style = HighlightStyle.define([
+      { tag: tags.keyword, color: "keyword" },
+      { tag: [tags.name, tags.variableName], color: "variable" },
+      { tag: SQL_BUILTIN_HIGHLIGHT_TAG, color: "builtin" },
+    ]);
+
+    const dialect = createDbxCodeMirrorSqlDialect(langSql, "postgres", "postgres");
+    const doc = "select count(*) from t";
+    const tree = dialect.language.parser.parse(doc);
+    const classesByToken = new Map<string, string>();
+    highlightTree(tree, style, (from, to, cls) => classesByToken.set(doc.slice(from, to), cls));
+
+    expect(classesByToken.get("count")).toBeDefined();
+    expect(classesByToken.get("count")).not.toBe(classesByToken.get("t"));
+    expect(classesByToken.get("count")).not.toBe(classesByToken.get("select"));
+  });
+});
+
 describe("editor gutters", () => {
+  it("does not let the gutter minimum height cycle against the scroller content height", () => {
+    const rules = buildEditorFontThemeRules();
+
+    // CodeMirror's base theme applies `min-height: 100%` to `.cm-gutter` while
+    // `.cm-gutters` is sized from the scroller content (`.cm-content`), so the
+    // percentage resolves against a height the gutter itself participates in.
+    // WebKit then re-runs layout for the whole gutter subtree whenever layout
+    // is forced, which macOS 27 does on every selection collapse: a 639 line
+    // query made right click / Esc / select-all freeze for ~180ms. The gutter
+    // spacers already span the full content height and `.cm-gutters` paints the
+    // background, so the cyclic minimum must stay at 0.
+    expect(rules[".cm-gutter"]).toMatchObject({ minHeight: "0" });
+  });
+
   it("keeps single line numbers vertically centered in the base rule", () => {
     const rules = buildEditorFontThemeRules();
 
@@ -199,6 +264,20 @@ describe("editor gutters", () => {
       alignItems: "center",
       display: "flex",
       justifyContent: "flex-end",
+    });
+  });
+});
+
+describe("editor font theme", () => {
+  it("disables ligatures on the editor content so repainted character runs stay stable", () => {
+    const rules = buildEditorFontThemeRules();
+
+    // Ligature fonts merge runs like `--`/`==` into one glyph and can race
+    // CodeMirror's per-keystroke span patching (dbx#7900); dropping either
+    // declaration would reintroduce unpainted characters in the query editor.
+    expect(rules[".cm-content"]).toMatchObject({
+      fontVariantLigatures: "none",
+      fontFeatureSettings: '"liga" 0, "calt" 0',
     });
   });
 });

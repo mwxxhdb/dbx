@@ -23,6 +23,13 @@ export function createQueryEditorLineNumberAlignmentExtension(ViewPlugin: typeof
   return ViewPlugin.fromClass(
     class {
       private measureScheduled = false;
+      // Alignment is only ever needed for wrapped lines. While wrapping is
+      // off, every geometry change (each frame of a splitter drag resizing
+      // the editor, font changes, viewport moves) would otherwise re-read
+      // every gutter element for nothing. A single pass still runs on wrap
+      // transitions so stale inline alignment is cleared from live gutter
+      // elements.
+      private lastWrapping = true;
 
       constructor(view: import("@codemirror/view").EditorView) {
         this.scheduleMeasure(view);
@@ -38,6 +45,9 @@ export function createQueryEditorLineNumberAlignmentExtension(ViewPlugin: typeof
 
       private scheduleMeasure(view: import("@codemirror/view").EditorView) {
         if (this.measureScheduled) return;
+        const wrapping = view.lineWrapping;
+        if (wrapping === this.lastWrapping && !wrapping) return;
+        this.lastWrapping = wrapping;
         this.measureScheduled = true;
         view.requestMeasure({
           read: (measuredView) => {

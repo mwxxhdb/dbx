@@ -336,7 +336,11 @@ fn driver_manifest_declares_expected_product_capabilities() {
     assert_eq!(zookeeper.runtime_mode, "agent");
     assert_eq!(zookeeper.agent_key.as_deref(), Some("zookeeper"));
     assert_eq!(zookeeper.support_level, "connect");
-    assert!(zookeeper.capabilities.query_execution);
+    // ZooKeeper has no SQL engine and its agent implements only kv_* operations;
+    // claiming query execution or schema search made "new query" call
+    // list-databases on an agent that does not support it (issue #8215).
+    assert!(!zookeeper.capabilities.query_execution);
+    assert!(!zookeeper.capabilities.schema_search);
     assert!(zookeeper.capabilities.driver_management);
     assert!(!zookeeper.capabilities.metadata_browse);
 
@@ -359,6 +363,18 @@ fn driver_manifest_declares_expected_product_capabilities() {
     assert!(uxdb.capabilities.table_structure_edit);
     assert!(!uxdb.capabilities.data_transfer);
     assert!(!uxdb.capabilities.user_admin);
+
+    let salesforce = find_driver(DatabaseType::Salesforce);
+    assert_eq!(salesforce.label, "Salesforce");
+    assert_eq!(salesforce.support_level, "operate");
+    assert!(salesforce.capabilities.query_execution);
+    assert!(salesforce.capabilities.metadata_browse);
+    assert!(salesforce.capabilities.object_browser);
+    assert!(salesforce.capabilities.schema_search);
+    assert!(salesforce.capabilities.table_data_edit);
+    assert!(!salesforce.capabilities.table_structure_edit);
+    assert!(!salesforce.capabilities.object_source);
+    assert!(!salesforce.capabilities.diagram);
 
     let spanner = find_driver(DatabaseType::Spanner);
     assert_eq!(spanner.label, "Google Cloud Spanner");
@@ -450,4 +466,57 @@ fn goldendb_declares_data_transfer_support() {
 
     assert!(goldendb.capabilities.table_import);
     assert!(goldendb.capabilities.data_transfer);
+}
+
+#[test]
+fn highgo_declares_data_transfer_support() {
+    let manifest = driver_manifest();
+    let highgo =
+        manifest.drivers.iter().find(|driver| driver.db_type == DatabaseType::Highgo).expect("HighGo manifest entry");
+
+    assert!(highgo.capabilities.table_import);
+    assert!(highgo.capabilities.data_transfer);
+}
+
+#[test]
+fn vastbase_declares_data_transfer_support() {
+    let manifest = driver_manifest();
+    let vastbase = manifest
+        .drivers
+        .iter()
+        .find(|driver| driver.db_type == DatabaseType::Vastbase)
+        .expect("Vastbase manifest entry");
+
+    assert!(vastbase.capabilities.table_import);
+    assert!(vastbase.capabilities.data_transfer);
+}
+
+#[test]
+fn yashandb_declares_data_transfer_support() {
+    let manifest = driver_manifest();
+    let yashandb = manifest
+        .drivers
+        .iter()
+        .find(|driver| driver.db_type == DatabaseType::Yashandb)
+        .expect("YashanDB manifest entry");
+
+    assert!(yashandb.capabilities.table_import);
+    assert!(yashandb.capabilities.data_transfer);
+}
+
+#[test]
+fn xugu_declares_table_import_support() {
+    let manifest = driver_manifest();
+    let xugu =
+        manifest.drivers.iter().find(|driver| driver.db_type == DatabaseType::Xugu).expect("Xugu manifest entry");
+
+    assert!(xugu.capabilities.table_import);
+}
+
+#[test]
+fn db2_declares_table_import_support() {
+    let manifest = driver_manifest();
+    let db2 = manifest.drivers.iter().find(|driver| driver.db_type == DatabaseType::Db2).expect("DB2 manifest entry");
+
+    assert!(db2.capabilities.table_import);
 }

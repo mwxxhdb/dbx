@@ -34,6 +34,25 @@ describe("extractSqlParameters", () => {
       { key: "params", name: "params", syntax: "named", token: ":params" },
       { key: "context", name: "context", syntax: "sqlserver", token: "@context" },
     ]);
+    expect(extractSqlParameters("select :customer_id", { databaseType: "mysql" })).toEqual(["customer_id"]);
+  });
+
+  it("preserves Neo4j pattern labels and relationship types", () => {
+    const cypher = 'MATCH (p:Person)-[:WORK_IN]->(c:Company{name:"星云科技"})\nRETURN p.name, p.job, c.name';
+    const options = { databaseType: "neo4j" as const };
+    expect(extractSqlParameterDescriptors(cypher, options)).toEqual([]);
+    expect(substituteSqlParameters(cypher, {}, options)).toBe(cypher);
+    expect(extractSqlParameterDescriptors(cypher, { ...options, enabledSyntaxes: ["named"] as const })).toEqual([]);
+    expect(extractSqlParameters("MATCH (p:Person {name:${name}}) RETURN p", options)).toEqual(["name"]);
+  });
+
+  it("keeps NebulaGraph tags and edge types intact in nGQL", () => {
+    const ngql = 'MATCH (p:Person)-[:WORK_IN]->(c:Company{name:"星云科技"}) RETURN p.Person.name LIMIT 10';
+    const options = { databaseType: "nebula" as const };
+    expect(extractSqlParameterDescriptors(ngql, options)).toEqual([]);
+    expect(substituteSqlParameters(ngql, {}, options)).toBe(ngql);
+    expect(extractSqlParameters("MATCH (p:Person {name:${name}}) RETURN p LIMIT 10", options)).toEqual(["name"]);
+    expect(extractSqlParameters("select :customer_id", { databaseType: "mysql" })).toEqual(["customer_id"]);
   });
 
   it("extracts unique template parameters in order", () => {
@@ -290,6 +309,41 @@ describe("extractSqlParameters", () => {
     `;
 
     expect(extractSqlParameters(sql, { databaseType: "mysql" })).toEqual(["input_id", "tenant_id"]);
+  });
+
+  it("ignores MySQL user variables assigned by GET DIAGNOSTICS", () => {
+    const sql = `
+      get diagnostics condition 1 @err_state = returned_sqlstate, @err_msg = message_text;
+      select concat('failed: ', @err_state, ' ', @err_msg) as result;
+    `;
+
+    expect(extractSqlParameters(sql, { databaseType: "mysql" })).toEqual([]);
+  });
+
+  it("ignores GET CURRENT/STACKED DIAGNOSTICS targets and the statement-level row count", () => {
+    const sql = `
+      get diagnostics @affected = row_count;
+      get current diagnostics condition 1 @current_state = returned_sqlstate;
+      get stacked diagnostics condition 1 @stacked_state = returned_sqlstate;
+      select @affected, @current_state, @stacked_state;
+    `;
+
+    expect(extractSqlParameters(sql, { databaseType: "mysql" })).toEqual([]);
+  });
+
+  it("keeps ordinary MySQL template parameters next to GET DIAGNOSTICS targets", () => {
+    const sql = `
+      get diagnostics condition 1 @err_msg = message_text;
+      select * from audit_log where tenant_id = @tenant_id and note = @err_msg;
+    `;
+
+    expect(extractSqlParameters(sql, { databaseType: "mysql" })).toEqual(["tenant_id"]);
+  });
+
+  it("keeps a template parameter on a column named get", () => {
+    const sql = "select get from api_methods where tenant_id = @tenant_id";
+
+    expect(extractSqlParameters(sql, { databaseType: "mysql" })).toEqual(["tenant_id"]);
   });
 
   it("ignores SQL Server procedure parameters declared in routine definitions", () => {

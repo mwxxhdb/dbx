@@ -44,7 +44,13 @@ pub async fn start_database_export(
     // endpoint after the export completes.
     let tmp_dir = state.data_dir.join("tmp");
     std::fs::create_dir_all(&tmp_dir).map_err(|e| AppError::from(e.to_string()))?;
-    let extension = if req.output_compression == DatabaseExportOutputCompression::Gzip { "sql.gz" } else { "sql" };
+    let extension = if req.split_max_mb.is_some() {
+        "zip"
+    } else if req.output_compression == DatabaseExportOutputCompression::Gzip {
+        "sql.gz"
+    } else {
+        "sql"
+    };
     let tmp_file = tmp_dir.join(format!("database_export_{export_id}.{extension}"));
     let tmp_file_path = tmp_file.to_string_lossy().to_string();
     req.file_path = tmp_file_path.clone();
@@ -105,6 +111,8 @@ pub async fn start_database_export(
                     status: ExportStatus::Error,
                     error: Some(e.clone()),
                     preparing: false,
+                    error_count: 0,
+                    error_summary: None,
                 };
                 if let Ok(json) = serde_json::to_string(&progress) {
                     let _ = tx.send(json);
@@ -168,8 +176,13 @@ pub async fn database_export_download(
     // Clean up temp file
     let _ = tokio::fs::remove_file(&export_file.file_path).await;
 
-    let content_type =
-        if export_file.format == "sql.gz" { "application/gzip" } else { "application/sql; charset=utf-8" };
+    let content_type = if export_file.format == "zip" {
+        "application/zip"
+    } else if export_file.format == "sql.gz" {
+        "application/gzip"
+    } else {
+        "application/sql; charset=utf-8"
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)

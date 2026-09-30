@@ -1,7 +1,9 @@
 import { DEFAULT_SQL_FORMATTER_SETTINGS, normalizeSqlFormatterSettings, sqlFormatterOptions, type SqlFormatterSettings } from "@/lib/sql/sqlFormatterConfig";
+import { formatSqlLayout, type SqlLayoutOptions } from "@/lib/sql/layout";
 import { looksLikeXml } from "@/lib/sql/autoFormat";
+import { compressCypherText, formatCypherText } from "@/lib/sql/cypherFormatter";
 
-export type SqlFormatDialect = "mysql" | "postgres" | "sqlite" | "sqlserver" | "oracle" | "clickhouse" | "dameng" | "duckdb" | "generic";
+export type SqlFormatDialect = "mysql" | "postgres" | "sqlite" | "sqlserver" | "oracle" | "clickhouse" | "dameng" | "duckdb" | "cypher" | "generic";
 
 export const MAX_SQL_FORMAT_CHARS = 1_000_000;
 
@@ -27,7 +29,7 @@ function resolveClickHouseIdentifierSafeDialect(sqlFormatter: SqlFormatterModule
 }
 
 export function canFormatSqlForDatabaseType(dbType: string | null | undefined): boolean {
-  return dbType !== "victoriametrics";
+  return dbType !== "redis" && dbType !== "victoriametrics";
 }
 
 /**
@@ -86,6 +88,8 @@ export function sqlFormatDialectForDbType(dbType: string | null | undefined): Sq
       return "dameng";
     case "duckdb":
       return "duckdb";
+    case "neo4j":
+      return "cypher";
     default:
       return "generic";
   }
@@ -339,9 +343,11 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
     throw new UnsupportedStructuredInputError("xml");
   }
 
+  const normalizedSettings = normalizeSqlFormatterSettings(settings);
+  if (dialect === "cypher") return formatCypherText(sql, normalizedSettings);
+
   const sqlFormatter = await import("sql-formatter");
   const { format, formatDialect } = sqlFormatter;
-  const normalizedSettings = normalizeSqlFormatterSettings(settings);
   const options = sqlFormatterOptions(normalizedSettings);
   const language = formatterLanguage(dialect);
   const emptyLineProtection = normalizedSettings.preserveEmptyLines ? protectEmptyLines(sql) : null;
@@ -361,10 +367,11 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
           },
         }
       : options;
+  const resolvedDialect = dialect === "clickhouse" ? resolveClickHouseIdentifierSafeDialect(sqlFormatter) : undefined;
   const formatWithFallback = (input: string): string => {
     try {
-      if (dialect === "clickhouse") {
-        return formatDialect(input, { ...formatterOptions, dialect: resolveClickHouseIdentifierSafeDialect(sqlFormatter) });
+      if (resolvedDialect) {
+        return formatDialect(input, { ...formatterOptions, dialect: resolvedDialect });
       }
       return format(input, { language, ...formatterOptions });
     } catch (err) {
@@ -389,14 +396,35 @@ export async function formatSqlText(sql: string, dialect: SqlFormatDialect = "ge
     return emptyLineProtection ? restoreProtectedEmptyLines(laidOut, emptyLineProtection.markers) : laidOut;
   };
 
+  // DBX's own layout printer produces the default style. It needs the AST and
+  // sql-formatter's internal layout machinery, so it can decline an input — an
+  // unparseable statement, an internal shape that moved. `null` means "use the
+  // public formatter", which is also what the tabular indent styles ask for:
+  // those are an alternative layout this printer deliberately does not reproduce.
+  const layoutOptions: Partial<SqlLayoutOptions> = {
+    lineWidth: normalizedSettings.expressionWidth,
+    indentWidth: normalizedSettings.tabWidth,
+    useTabs: normalizedSettings.useTabs,
+    linesBetweenQueries: normalizedSettings.linesBetweenQueries,
+    fromClauseSourceOnSameLine: normalizedSettings.fromClauseLayout === "sameLine",
+    keywordCase: normalizedSettings.keywordCase,
+    logicalOperatorNewline: normalizedSettings.logicalOperatorNewline,
+  };
+  const usesDefaultStyle = normalizedSettings.indentStyle === "standard";
+
+  const formatOnce = async (input: string): Promise<string> => {
+    const laidOut = usesDefaultStyle ? await formatSqlLayout({ sql: input, language, dialectOptions: resolvedDialect, cfg: formatterOptions, options: layoutOptions }) : null;
+    return laidOut ?? formatWithFallback(input);
+  };
+
   try {
-    return finalizeFormattedSql(formatWithFallback(protectedInput.sql));
+    return finalizeFormattedSql(await formatOnce(protectedInput.sql));
   } catch (err) {
     const trailingDot = dialect === "dameng" ? splitTrailingStandaloneDot(protectedInput.sql) : null;
     if (!trailingDot) throw err;
 
     try {
-      return finalizeFormattedSql(`${formatWithFallback(trailingDot.body)}${trailingDot.suffix}`);
+      return finalizeFormattedSql(`${await formatOnce(trailingDot.body)}${trailingDot.suffix}`);
     } catch {
       throw err;
     }
@@ -640,6 +668,18 @@ function keepFromClauseAndFirstSourceOnSameLine(sql: string): string {
   return lines.join("\n");
 }
 
+/**
+ * The text-level passes applied to whatever the formatter produced, whether the
+ * default style's layout printer or sql-formatter itself.
+ *
+ * The two settings-driven passes fix shapes the printer already gets right on
+ * its own — it keeps a `FROM` source on the keyword's line and joins operators
+ * for `none` — so they are no-ops on its output. They stay because a statement
+ * the printer declines falls back to sql-formatter's layout for the whole input,
+ * which does break those shapes; see `formatSqlText`. {@link
+ * normalizeLikeOperatorCase} is unrelated to either: it corrects a dialect quirk
+ * in both paths.
+ */
 function applySqlFormatterLayout(sql: string, settings: SqlFormatterSettings, dialect: SqlFormatDialect): string {
   let formatted = normalizeLikeOperatorCase(sql, settings, dialect);
   if (settings.logicalOperatorNewline === "none") formatted = keepLogicalOperatorsOnSameLine(formatted, dialect);
@@ -698,6 +738,7 @@ export type SqlCompressDialect = SqlFormatDialect;
  */
 export function compressSqlText(sql: string, dialect: SqlCompressDialect = "generic"): string {
   if (!sql.trim()) return sql;
+  if (dialect === "cypher") return compressCypherText(sql);
 
   const len = sql.length;
   let out = "";

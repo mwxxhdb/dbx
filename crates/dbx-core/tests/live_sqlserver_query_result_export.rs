@@ -1,7 +1,6 @@
 use dbx_core::connection::{AppState, PoolKind};
 use dbx_core::models::connection::DatabaseType;
 use dbx_core::query_result_export::{export_query_result_core, ExportStatus, QueryResultExportRequest};
-use dbx_core::storage::Storage;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -52,10 +51,15 @@ fn live_sqlserver_config(id: &str, database: &str) -> dbx_core::models::connecti
         redis_scan_page_size: None,
         redis_database_aliases: Default::default(),
         redis_key_templates: Vec::new(),
+        redis_key_grouping: None,
         etcd_endpoints: String::new(),
         gbase_server: String::new(),
         informix_server: String::new(),
         external_config: None,
+        plugin_id: None,
+        plugin_connection_provider: None,
+        plugin_connection_type: None,
+        connection_secrets: Default::default(),
         jdbc_driver_class: None,
         jdbc_driver_paths: Vec::new(),
         one_time: false,
@@ -64,6 +68,7 @@ fn live_sqlserver_config(id: &str, database: &str) -> dbx_core::models::connecti
         is_production: false,
         production_databases: vec![],
         show_system_schemas: false,
+        sidebar_auto_load_all_tables: false,
         database_info: None,
     }
 }
@@ -84,7 +89,7 @@ async fn live_sqlserver_xlsx_export_can_outlive_query_timeout_while_rows_keep_ar
     let suffix = uuid::Uuid::new_v4().simple().to_string();
     let dir = std::env::temp_dir().join(format!("dbx-live-sqlserver-xlsx-{suffix}"));
     std::fs::create_dir_all(&dir).unwrap();
-    let storage = Storage::open(&dir.join("storage.db")).await.unwrap();
+    let storage = dbx_core::persistence::test_storage::open(&dir.join("storage.db")).await.unwrap();
     let state = AppState::new(storage);
     let connection_id = "live-sqlserver-xlsx-export";
     let pool_key = format!("{connection_id}:{database}");
@@ -113,6 +118,7 @@ async fn live_sqlserver_xlsx_export_can_outlive_query_timeout_while_rows_keep_ar
         use_agent_cursor: false,
         file_path: file_path.to_string_lossy().to_string(),
         format: "xlsx".to_string(),
+        insert_mode: Default::default(),
         include_sql_sheet: false,
         page_size: 5000,
         row_limit: Some(200_000),
@@ -123,12 +129,17 @@ async fn live_sqlserver_xlsx_export_can_outlive_query_timeout_while_rows_keep_ar
         execution_id: Some(format!("live-sqlserver-xlsx-{suffix}")),
         date_time_format: None,
         csv_quote_mode: Default::default(),
+        null_literal: String::new(),
         export_table_name: None,
         export_column_types: None,
+        selected_columns: None,
+        export_column_extras: None,
         column_comments: None,
         auto_filter: None,
         identifier_quote: None,
         numeric_column_right_align: false,
+        exclude_primary_keys: false,
+        primary_keys: Vec::new(),
     };
     let rows_exported = AtomicU64::new(0);
     let done_seen = AtomicBool::new(false);

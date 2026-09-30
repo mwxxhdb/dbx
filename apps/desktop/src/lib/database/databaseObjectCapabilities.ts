@@ -18,21 +18,23 @@ const MYSQL_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "PROCEDURE", "FUNCT
 // covers user-created types (enum/domain/composite/range/multirange/base);
 // relation auto-generated row types stay hidden.
 const POSTGRES_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "TYPE"];
+const OPENGAUSS_A_OBJECTS: SidebarObjectKind[] = [...POSTGRES_OBJECTS, "PACKAGE", "PACKAGE_BODY"];
 
 // KWDB is routed through the PostgreSQL pool but its pg_type catalog
 // compatibility is not verified yet, so it stays on the pre-TYPE object set.
 const POSTGRES_NO_TYPE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE"];
 
 // Kingbase and Vastbase agents support the same user-defined type listing via
-// their own metadata query, but do not expose sequences. Kingbase additionally
-// has a verified schema-trigger path; keep Vastbase separate until its Agent
+// their own metadata query, and their sequences are read from the PostgreSQL
+// catalogs over the agent connection (t8y2/dbx#9016). Kingbase additionally has
+// a verified schema-trigger path; keep Vastbase separate until its Agent
 // exposes the same parent-table-aware metadata contract.
-const KINGBASE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "TYPE"];
-const VASTBASE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TYPE"];
+const KINGBASE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "TYPE"];
+const VASTBASE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "TYPE"];
 
 const POSTGRES_LIKE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION"];
 const ORACLE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY"];
-const OCEANBASE_ORACLE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "PACKAGE", "PACKAGE_BODY"];
+const OCEANBASE_ORACLE_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY"];
 const DAMENG_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "MATERIALIZED_VIEW", "PROCEDURE", "FUNCTION", "SEQUENCE", "PACKAGE", "PACKAGE_BODY"];
 const XUGU_OBJECTS: SidebarObjectKind[] = ["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "TRIGGER", "SEQUENCE", "SYNONYM", "PACKAGE", "PACKAGE_BODY", "TYPE", "TYPE_BODY"];
 const PACKAGE_MEMBER_EXPANSION_DATABASES = new Set<DatabaseType>(["oracle", "xugu"]);
@@ -55,6 +57,10 @@ const DATABASE_TYPE_OBJECTS = new Map<DatabaseType, SidebarObjectKind[]>([
   ["oceanbase-oracle", OCEANBASE_ORACLE_OBJECTS],
   ["xugu", XUGU_OBJECTS],
   ["mysql", MYSQL_OBJECTS],
+  // Explicit entry so schema-diff routine gating can opt in without relying on the
+  // unknown-type ROUTINE_OBJECTS fallback. Keep the same object set the fallback
+  // already used (no TRIGGER/SEQUENCE expansion in this change).
+  ["sqlserver", ROUTINE_OBJECTS],
   // table and view
   ["sqlite", TABLE_VIEW_OBJECTS],
   ["rqlite", TABLE_VIEW_OBJECTS],
@@ -63,7 +69,7 @@ const DATABASE_TYPE_OBJECTS = new Map<DatabaseType, SidebarObjectKind[]>([
   ["duckdb", TABLE_VIEW_OBJECTS],
   ["clickhouse", TABLE_VIEW_OBJECTS],
   // Doris: backend listing path still uses the generic SHOW TABLES path (see
-  // `list_tables_once` for `PoolKind::Mysql` in crates/dbx-core/src/schema.rs)
+  // `list_tables_once` for `PoolKind::Mysql` in crates/dbx-core/src/schema/mod.rs)
   // and lacks a MV classifier. Keep Doris on TABLE_VIEW_OBJECTS until a
   // Doris-specific MV listing/classification lands, otherwise the UI advertises
   // MV support that the backend cannot route.
@@ -74,6 +80,7 @@ const DATABASE_TYPE_OBJECTS = new Map<DatabaseType, SidebarObjectKind[]>([
   // ArgoDB (Transwarp) shares the Hive agent; its catalog views
   // (system.procedures_v / system.functions_v) expose routines natively.
   ["argo", ROUTINE_OBJECTS],
+  ["transwarp", ["TABLE", "VIEW", "PROCEDURE", "FUNCTION", "PACKAGE", "PACKAGE_BODY"]],
   ["kyuubi", TABLE_VIEW_OBJECTS],
   ["impala", TABLE_VIEW_OBJECTS],
   ["spark", TABLE_VIEW_OBJECTS],
@@ -90,11 +97,13 @@ const DATABASE_TYPE_OBJECTS = new Map<DatabaseType, SidebarObjectKind[]>([
   ["tdengine", TABLE_VIEW_OBJECTS],
   ["iotdb", TABLE_VIEW_OBJECTS],
   ["neo4j", TABLE_VIEW_OBJECTS],
+  ["nebula", TABLE_VIEW_OBJECTS],
   // others
   ["influxdb", ["TABLE"]],
   ["influxdb3", ["TABLE"]],
   ["victoriametrics", ["TABLE"]],
   ["hbase", ["TABLE"]],
+  ["salesforce", ["TABLE"]],
   ["questdb", ["TABLE", "VIEW", "MATERIALIZED_VIEW"]],
   ["manticoresearch", ["TABLE", "FUNCTION"]],
   ["databend", ["TABLE", "VIEW", "PROCEDURE"]],
@@ -110,8 +119,8 @@ function isSourceReadableObjectKind(kind: SidebarObjectKind, dbType?: DatabaseTy
   return true;
 }
 
-export function databaseObjectCapabilities(dbType?: DatabaseType): DatabaseObjectCapabilities {
-  const sidebarObjects = sidebarObjectKindsForDatabase(dbType);
+export function databaseObjectCapabilities(dbType?: DatabaseType, compatibilityMode?: string): DatabaseObjectCapabilities {
+  const sidebarObjects = sidebarObjectKindsForDatabase(dbType, compatibilityMode);
   return {
     sidebarObjects,
     sourceReadable: sidebarObjects.filter((kind) => isSourceReadableObjectKind(kind, dbType)),
@@ -119,8 +128,52 @@ export function databaseObjectCapabilities(dbType?: DatabaseType): DatabaseObjec
   };
 }
 
-export function sidebarObjectKindsForDatabase(dbType?: DatabaseType): SidebarObjectKind[] {
+const SCHEMA_DIFF_ROUTINE_KINDS = ["PROCEDURE", "FUNCTION"] as const;
+
+/** Same-dialect families with verified list_objects + get_object_source (or PG catalog) paths. */
+const SCHEMA_DIFF_ROUTINE_FAMILY = new Map<DatabaseType, "postgres" | "mysql" | "sqlserver">([
+  ["postgres", "postgres"],
+  ["opengauss", "postgres"],
+  ["gaussdb", "postgres"],
+  ["kwdb", "postgres"],
+  ["kingbase", "postgres"],
+  ["highgo", "postgres"],
+  ["uxdb", "postgres"],
+  ["vastbase", "postgres"],
+  ["redshift", "postgres"],
+  ["mysql", "mysql"],
+  ["sqlserver", "sqlserver"],
+]);
+
+/**
+ * Schema Diff routine compare is limited to an allowlist of same-dialect families.
+ * Sidebar may list routines for more engines (oracle/hive/…); those stay out of
+ * schema-diff until a verified compare path lands. Cross-family pairs never match.
+ */
+export function supportsSchemaDiffRoutines(dbType?: DatabaseType): boolean {
+  if (!dbType || !SCHEMA_DIFF_ROUTINE_FAMILY.has(dbType)) return false;
+  const { sidebarObjects, sourceReadable } = databaseObjectCapabilities(dbType);
+  return SCHEMA_DIFF_ROUTINE_KINDS.some((kind) => sidebarObjects.includes(kind) && sourceReadable.includes(kind));
+}
+
+export function schemaDiffRoutineObjectTypes(dbType?: DatabaseType): Array<"PROCEDURE" | "FUNCTION"> {
+  if (!supportsSchemaDiffRoutines(dbType)) return [];
+  const { sidebarObjects, sourceReadable } = databaseObjectCapabilities(dbType);
+  return SCHEMA_DIFF_ROUTINE_KINDS.filter((kind) => sidebarObjects.includes(kind) && sourceReadable.includes(kind));
+}
+
+export function schemaDiffRoutineObjectTypesIntersection(sourceDbType?: DatabaseType, targetDbType?: DatabaseType): Array<"PROCEDURE" | "FUNCTION"> {
+  if (!sourceDbType || !targetDbType) return [];
+  const sourceFamily = SCHEMA_DIFF_ROUTINE_FAMILY.get(sourceDbType);
+  const targetFamily = SCHEMA_DIFF_ROUTINE_FAMILY.get(targetDbType);
+  if (!sourceFamily || sourceFamily !== targetFamily) return [];
+  const sourceTypes = new Set(schemaDiffRoutineObjectTypes(sourceDbType));
+  return schemaDiffRoutineObjectTypes(targetDbType).filter((kind) => sourceTypes.has(kind));
+}
+
+export function sidebarObjectKindsForDatabase(dbType?: DatabaseType, compatibilityMode?: string): SidebarObjectKind[] {
   if (!dbType) return [...TABLE_VIEW_OBJECTS];
+  if (dbType === "opengauss" && compatibilityMode?.trim().toUpperCase() === "A") return [...OPENGAUSS_A_OBJECTS];
   return DATABASE_TYPE_OBJECTS.get(dbType) ?? [...ROUTINE_OBJECTS];
 }
 
@@ -155,8 +208,8 @@ export function customTypeCapabilities(dbType?: DatabaseType): CustomTypeCapabil
   return { details: supported, members: supported, ddl: supported };
 }
 
-export function supportsPackageMemberExpansion(dbType?: DatabaseType): boolean {
-  return !!dbType && PACKAGE_MEMBER_EXPANSION_DATABASES.has(dbType);
+export function supportsPackageMemberExpansion(dbType?: DatabaseType, compatibilityMode?: string): boolean {
+  return !!dbType && (PACKAGE_MEMBER_EXPANSION_DATABASES.has(dbType) || (dbType === "opengauss" && compatibilityMode?.trim().toUpperCase() === "A"));
 }
 
 export function normalizeSidebarObjectKind(type: string): SidebarObjectKind {

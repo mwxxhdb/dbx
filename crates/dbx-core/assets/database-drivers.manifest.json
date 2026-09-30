@@ -568,6 +568,35 @@
       }
     },
     {
+      "dbType": "solr",
+      "label": "Apache Solr",
+      "runtimeMode": "native",
+      "mcpMode": "bridge",
+      "singleConnectionPool": false,
+      "metadataConnectionScoped": false,
+      "skipTcpProbe": false,
+      "defaultPort": 8983,
+      "supportLevel": "browse",
+      "capabilities": {
+        "queryExecution": true,
+        "metadataBrowse": true,
+        "objectBrowser": false,
+        "objectSource": false,
+        "schemaSearch": false,
+        "diagram": false,
+        "tableDataEdit": false,
+        "tableStructureEdit": false,
+        "tableImport": false,
+        "dataTransfer": false,
+        "sqlFileExecution": false,
+        "databaseCreate": false,
+        "fieldLineage": false,
+        "sqlExplain": false,
+        "userAdmin": false,
+        "driverManagement": false
+      }
+    },
+    {
       "dbType": "hbase",
       "label": "Apache HBase",
       "runtimeMode": "native",
@@ -737,7 +766,7 @@
         "sqlFileExecution": true,
         "databaseCreate": true,
         "fieldLineage": false,
-        "sqlExplain": false,
+        "sqlExplain": true,
         "userAdmin": true,
         "driverManagement": false
       }
@@ -945,7 +974,7 @@
         "tableDataEdit": true,
         "tableStructureEdit": true,
         "tableImport": true,
-        "dataTransfer": false,
+        "dataTransfer": true,
         "sqlFileExecution": true,
         "databaseCreate": true,
         "fieldLineage": false,
@@ -1021,7 +1050,7 @@
         "tableDataEdit": true,
         "tableStructureEdit": true,
         "tableImport": true,
-        "dataTransfer": false,
+        "dataTransfer": true,
         "sqlFileExecution": true,
         "databaseCreate": true,
         "fieldLineage": false,
@@ -1202,7 +1231,7 @@
         "tableDataEdit": true,
         "tableStructureEdit": true,
         "tableImport": true,
-        "dataTransfer": false,
+        "dataTransfer": true,
         "sqlFileExecution": true,
         "databaseCreate": true,
         "fieldLineage": false,
@@ -1536,7 +1565,7 @@
         "sqlFileExecution": true,
         "databaseCreate": false,
         "fieldLineage": true,
-        "sqlExplain": false,
+        "sqlExplain": true,
         "userAdmin": false,
         "driverManagement": true
       }
@@ -1692,7 +1721,7 @@
         "tableDataEdit": true,
         "tableStructureEdit": true,
         "tableImport": false,
-        "dataTransfer": false,
+        "dataTransfer": true,
         "sqlFileExecution": true,
         "databaseCreate": false,
         "fieldLineage": false,
@@ -1878,6 +1907,50 @@
       }
     },
     {
+      "dbType": "transwarp",
+      "label": "星环Inceptor",
+      "dialect": "Transwarp",
+      "runtimeMode": "agent",
+      "mcpMode": "bridge",
+      "agentKey": "transwarp",
+      "driverStoreVisible": true,
+      "driverStoreOrder": 52,
+      "driverProfiles": [
+        {
+          "profile": "transwarp-inceptor",
+          "agentKey": "transwarp",
+          "label": "星环Inceptor",
+          "storeVisible": false
+        }
+      ],
+      "singleConnectionPool": false,
+      "metadataConnectionScoped": false,
+      "skipTcpProbe": true,
+      "defaultPort": 10000,
+      "traits": {
+        "schemaAware": true
+      },
+      "supportLevel": "operate",
+      "capabilities": {
+        "queryExecution": true,
+        "metadataBrowse": true,
+        "objectBrowser": true,
+        "objectSource": true,
+        "schemaSearch": true,
+        "diagram": false,
+        "tableDataEdit": true,
+        "tableStructureEdit": true,
+        "tableImport": true,
+        "dataTransfer": true,
+        "sqlFileExecution": true,
+        "databaseCreate": true,
+        "fieldLineage": false,
+        "sqlExplain": false,
+        "userAdmin": false,
+        "driverManagement": true
+      }
+    },
+    {
       "dbType": "kyuubi",
       "label": "Apache Kyuubi",
       "runtimeMode": "agent",
@@ -1971,11 +2044,11 @@
         "diagram": true,
         "tableDataEdit": true,
         "tableStructureEdit": false,
-        "tableImport": false,
-        "dataTransfer": false,
+        "tableImport": true,
+        "dataTransfer": true,
         "sqlFileExecution": true,
         "databaseCreate": false,
-        "fieldLineage": false,
+        "fieldLineage": true,
         "sqlExplain": false,
         "userAdmin": false,
         "driverManagement": true
@@ -2043,6 +2116,46 @@
         "tableImport": false,
         "dataTransfer": false,
         "sqlFileExecution": true,
+        "databaseCreate": false,
+        "fieldLineage": false,
+        "sqlExplain": false,
+        "userAdmin": false,
+        "driverManagement": true
+      }
+    },
+    {
+      "dbType": "nebula",
+      "label": "NebulaGraph",
+      "runtimeMode": "agent",
+      "mcpMode": "bridge",
+      "agentKey": "nebula",
+      "driverProfiles": [
+        {
+          "profile": "nebula-v3",
+          "agentKey": "nebula",
+          "label": "NebulaGraph 3.x",
+          "storeVisible": false
+        }
+      ],
+      "driverStoreVisible": true,
+      "driverStoreOrder": 53,
+      "singleConnectionPool": false,
+      "metadataConnectionScoped": false,
+      "skipTcpProbe": true,
+      "defaultPort": 9669,
+      "supportLevel": "browse",
+      "capabilities": {
+        "queryExecution": true,
+        "metadataBrowse": true,
+        "objectBrowser": true,
+        "objectSource": true,
+        "schemaSearch": false,
+        "diagram": false,
+        "tableDataEdit": false,
+        "tableStructureEdit": false,
+        "tableImport": false,
+        "dataTransfer": false,
+        "sqlFileExecution": false,
         "databaseCreate": false,
         "fieldLineage": false,
         "sqlExplain": false,
@@ -2381,7 +2494,7 @@
         "diagram": true,
         "tableDataEdit": false,
         "tableStructureEdit": true,
-        "tableImport": false,
+        "tableImport": true,
         "dataTransfer": false,
         "sqlFileExecution": true,
         "databaseCreate": false,
@@ -2446,11 +2559,11 @@
       "defaultPort": 2181,
       "supportLevel": "connect",
       "capabilities": {
-        "queryExecution": true,
+        "queryExecution": false,
         "metadataBrowse": false,
         "objectBrowser": false,
         "objectSource": false,
-        "schemaSearch": true,
+        "schemaSearch": false,
         "diagram": false,
         "tableDataEdit": false,
         "tableStructureEdit": false,
@@ -2651,6 +2764,15 @@
       "runtimeMode": "agent",
       "mcpMode": "bridge",
       "agentKey": "iris",
+      "driverProfiles": [
+        {
+          "profile": "cache",
+          "agentKey": "cache",
+          "label": "InterSystems Caché",
+          "storeVisible": true,
+          "storeOrder": 51
+        }
+      ],
       "driverStoreVisible": true,
       "driverStoreOrder": 42,
       "singleConnectionPool": true,
@@ -2840,6 +2962,68 @@
         "sqlExplain": false,
         "userAdmin": false,
         "driverManagement": true
+      }
+    },
+    {
+      "dbType": "plugin",
+      "label": "Plugin",
+      "runtimeMode": "external",
+      "mcpMode": "unsupported",
+      "singleConnectionPool": false,
+      "metadataConnectionScoped": false,
+      "skipTcpProbe": true,
+      "supportLevel": "connect",
+      "specializedSurface": true,
+      "capabilities": {
+        "queryExecution": false,
+        "metadataBrowse": false,
+        "objectBrowser": false,
+        "objectSource": false,
+        "schemaSearch": false,
+        "diagram": false,
+        "tableDataEdit": false,
+        "tableStructureEdit": false,
+        "tableImport": false,
+        "dataTransfer": false,
+        "sqlFileExecution": false,
+        "databaseCreate": false,
+        "fieldLineage": false,
+        "sqlExplain": false,
+        "userAdmin": false,
+        "driverManagement": false
+      }
+    },
+    {
+      "dbType": "salesforce",
+      "label": "Salesforce",
+      "dialect": "SOQL",
+      "runtimeMode": "native",
+      "mcpMode": "bridge",
+      "singleConnectionPool": true,
+      "metadataConnectionScoped": false,
+      "skipTcpProbe": true,
+      "defaultPort": 443,
+      "traits": {
+        "singleDatabase": true
+      },
+      "supportLevel": "operate",
+      "capabilities": {
+        "queryExecution": true,
+        "metadataBrowse": true,
+        "objectBrowser": true,
+        "objectSource": false,
+        "schemaSearch": true,
+        "diagram": false,
+        "tableDataEdit": true,
+        "tableStructureEdit": false,
+        "tableImport": false,
+        "dataTransfer": false,
+        "sqlFileExecution": false,
+        "databaseCreate": false,
+        "fieldLineage": false,
+        "sqlExplain": false,
+        "userAdmin": false,
+        "driverManagement": false
       }
     }
   ]

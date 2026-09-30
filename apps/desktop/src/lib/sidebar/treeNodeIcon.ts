@@ -89,6 +89,8 @@ export function getTreeNodeIconInfo(node: TreeNode): TreeNodeIconInfo | null {
       return { icon: TableProperties, colorClass: "text-primary" };
     case "user-admin":
       return { icon: UsersRound, colorClass: "text-primary" };
+    case "xugu-user-admin":
+      return { icon: ShieldCheck, colorClass: "text-primary" };
     case "dameng-users":
       return { icon: UsersRound, colorClass: "text-primary" };
     case "dameng-roles":
@@ -114,6 +116,8 @@ export function getTreeNodeIconInfo(node: TreeNode): TreeNodeIconInfo | null {
       return { icon: Braces, colorClass: "text-amber-500" };
     case "sequence":
       return { icon: ListTree, colorClass: "text-emerald-500" };
+    case "oracle-db-links":
+    case "oracle-db-link":
     case "synonym":
       return { icon: Link2, colorClass: "text-sky-500" };
     case "job":
@@ -150,7 +154,11 @@ export function getTreeNodeIconInfo(node: TreeNode): TreeNodeIconInfo | null {
       return { icon: node.isExpanded ? FolderOpen : FolderClosed, colorClass: "text-green-400" };
     case "group-extensions":
       return { icon: Package, colorClass: "text-violet-500" };
+    case "group-event-triggers":
+      return { icon: Package, colorClass: "text-violet-500" };
     case "extension":
+      return { icon: Package, colorClass: "text-violet-400" };
+    case "event-trigger":
       return { icon: Package, colorClass: "text-violet-400" };
     case "load-more":
       return { icon: Plus, colorClass: "text-primary" };

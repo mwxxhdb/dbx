@@ -265,9 +265,23 @@ pub async fn apply_env_connections_from(
     let from_env = collect_env_connections(vars);
     let count = from_env.len();
     let existing = storage.load_connections().await?;
+    let stale = stale_env_connection_ids(&existing, &from_env);
     let merged = merge_env_connections(existing, from_env);
     storage.save_connections(&merged).await?;
+    // save_connections only upserts, so env- connections that left the
+    // environment have to be removed explicitly.
+    storage.delete_connections(&stale).await?;
     Ok(count)
+}
+
+/// Ids of stored `env-` connections that are no longer declared in the environment.
+fn stale_env_connection_ids(existing: &[ConnectionConfig], from_env: &[ConnectionConfig]) -> Vec<String> {
+    let keep = from_env.iter().map(|config| config.id.as_str()).collect::<std::collections::HashSet<_>>();
+    existing
+        .iter()
+        .filter(|config| config.id.starts_with(ID_PREFIX) && !keep.contains(config.id.as_str()))
+        .map(|config| config.id.clone())
+        .collect()
 }
 
 /// Rebuilds every `env-` connection from `DBX_CONN_*` on startup.
