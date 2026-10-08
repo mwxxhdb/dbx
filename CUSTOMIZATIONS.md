@@ -211,10 +211,10 @@ build step。
 
 ### 测试基线（不知道这些会把正常的合并误判成回归）
 
-截至 2026-09-30（上一次上游同步之后重新实测）：
+截至 2026-10-08（上一次上游同步之后重新实测）：
 
-- `cargo test -p dbx-web`：**179 passed / 0 failed / 1 ignored**，必须全绿。（2026-08-25 时是 144，上游此后自己加了一批。）
-- `pnpm test`：**1592 个文件 / 18476 个用例全绿**。2026-08-25 时还有 9 个文件 / 72 个用例因 happy-dom
+- `cargo test -p dbx-web`：**190 passed / 0 failed / 1 ignored**，必须全绿。（2026-08-25 时是 144，2026-09-30 时是 179，上游此后自己加了一批。）
+- `pnpm test`：**1680 个文件 / 19960 个用例全绿**（2026-09-30 时是 1592 / 18476）。2026-08-25 时还有 9 个文件 / 72 个用例因 happy-dom
   缺 `localStorage.removeItem` / `clear` / `getItem` 而既有失败，上游已修好。输出里大量的
   `ECONNREFUSED 127.0.0.1:3000` 和 `AbortError` 是 stderr 噪音，不代表失败，看最后的
   `Test Files` / `Tests` 汇总行即可。
@@ -230,4 +230,4 @@ build step。
 
   同一组文件在纯上游上也红，就是上游自带的。
 - **跑 `pnpm test` 之前先把 cargo 编译缓存热起来**（`cargo build --tests` 或 `cargo test -p dbx-web`）。`exportSmoke.spec.ts` 会在 `beforeAll` 里冷编译一个 Rust example，而 hook 超时固定 120 秒；只要有 Rust 改动导致重新编译，这个 spec 第一次就会假失败，重跑（缓存已热）就过。
-- `pnpm typecheck` 和 `pnpm lint` 必须干净。`pnpm lint` 偶尔会 OOM 退出（`Linter process terminated abnormally`），那是环境问题，直接跑 `npx oxlint --vue-plugin apps/desktop/src` 即可。
+- `pnpm typecheck` 和 `pnpm lint` 必须干净。`pnpm lint` 偶尔会 OOM 退出（`Linter process terminated abnormally`），那是环境问题，直接跑 `npx oxlint --vue-plugin apps/desktop/src` 即可。`pnpm typecheck`（vue-tsc）也可能堆内存耗尽、exit 134（`JavaScript heap out of memory`），用 `NODE_OPTIONS=--max-old-space-size=16384 pnpm typecheck` 重跑。
