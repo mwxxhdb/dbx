@@ -234,7 +234,11 @@ COPY --from=backend /out/${TARGETPLATFORM}/dbx-web /usr/local/bin/
 COPY --from=frontend /app/dist /app/static
 ENV DBX_STATIC_DIR=/app/static
 ENV DBX_DATA_DIR=/app/data
-ENV DBX_BACKUP_ROOT=/app/backups
+# dbx-custom:start(backup-root) —— 见 CUSTOMIZATIONS.md
+# 上游为 /app/backups。/app 属 root，而部署以 runAsUser 1000 运行、只把卷挂到
+# /app/data，dbx-web 启动时 create_dir_all 会 Permission denied 直接 panic。
+ENV DBX_BACKUP_ROOT=/app/data/backups
+# dbx-custom:end
 # dbx-custom:start(no-java) —— 见 CUSTOMIZATIONS.md
 # 上游此处还有 ENV DBX_JAVA_BIN=/usr/bin/java，本 fork 已删除。
 # 必须与上面的 openjdk 一起删，不能只删一个：JRE 不存在时若保留此变量，

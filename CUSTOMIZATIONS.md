@@ -144,6 +144,22 @@ grep -n 'openjdk\|DBX_JAVA_BIN' deploy/Dockerfile | grep -v ':#'
 
 **不能一起删的包**：`fontconfig`、`fonts-dejavu-core`、`libfreetype6`。`system-fonts` 是 dbx-web 的默认 feature（`crates/dbx-web/Cargo.toml:12`），二进制链接了 `font-kit`。`ca-certificates`、`libssl3` 同样保留。
 
+### backup-root
+
+| 文件 | 改动 |
+|---|---|
+| `deploy/Dockerfile` | 1 处：`ENV DBX_BACKUP_ROOT=/app/backups` 改为 `/app/data/backups` |
+
+**原因**：上游 `2f960f104 feat(backup)` 新增该变量，指向 root 所有的 `/app/backups`。目标部署以 `runAsUser: 1000` 运行，只有 `/app/data` 挂了可写卷，`crates/dbx-web/src/main.rs` 启动时 `create_dir_all(&backup_root)` 报 `Permission denied` 直接 panic，Pod 进入 CrashLoopBackOff。放到 `/app/data` 下，备份与数据目录共用同一个卷。
+
+**合并时**：上游若改动这一行，git 可能直接合回 `/app/backups`。复核：
+
+```bash
+grep -n '^ENV DBX_BACKUP_ROOT' deploy/Dockerfile
+```
+
+输出必须是 `/app/data/backups`。
+
 ### china-mirrors
 
 | 文件 | 改动 |
